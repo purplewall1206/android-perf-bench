@@ -1,0 +1,154 @@
+# 测试项详细规格 (benchmark-specs.md)
+
+每个 benchmark 的**精确规格**：① 测试内容 ② 预制环境（含可配参数）③ 分析的数据 ④ CLI 参数。调参前必读。
+
+---
+
+## 测试项 1：App 启动时间 (`startup`)
+
+**对应 Fleet**：Exp-3 (Figure 13a–n)
+
+### ① 测试内容
+测量 app 从启动到首帧（可显示 / 完全显示）的耗时，区分：
+- **冷启动 (cold)**：进程不存在，需 fork zygote + 加载 class + inflate layout
+- **热启动 (hot)**：进程在后台缓存，仅恢复 Activity
+- **温启动 (warm)**：进程存在但 Activity 被回收
+
+### ② 预制环境
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `--app` | 必填 | 目标 app 包名（如 `com.android.chrome`） |
+| `--repeat` | 10 | 每个 app 重复启动次数 |
+| `--launch-type` | cold | `cold` / `hot` / `both` |
+| `--background-apps` | 0 | 启动前在后台预跑 N 个 app 制造内存压力（复刻 Fleet `start_all_apps`） |
+| `--clear-data` | true(cold) | 冷启动前 `pm clear` 清数据 |
+| `--cooldown` | 3s | 两次启动间冷却 |
+
+**冷启动流程**：`pm clear <pkg>` → `am force-stop` → （可选）后台预跑 N app → 起 perfetto trace → `am start -W` → 等首帧 → 停 trace
+**热启动流程**：`app_start` 跑前台 10s → `press home` 切后台缓存 → 等 `cooldown` → 起 trace → `am start -W` → 停 trace
+
+### ③ 分析的数据（每 app 一组）
+| 指标 | 来源 | 单位 |
+|---|---|---|
+| `WaitTime` / `TotalTime` | `am start -W` stdout | ms |
+| `LaunchState` | `am start -W` stdout | COLD/HOT/WARM |
+| `time_to_initial_display` (TTID) | android_startup metric | ns→ms |
+| `time_to_full_display` (TTFD) | android_startup metric | ns→ms（可能为 null） |
+| `dur` | android_startup | ns→ms |
+| `running_dur_ns` / `runnable_dur_ns` / `uninterruptible_sleep_dur_ns` | android_startup 主线程调度分解 | ns→ms |
+| 统计 | mean/std/min/max/p50/p95 | — |
+
+**可视化**：CDF 图（复刻 Fleet Fig 13a–l）、按 app 柱状图
+
+### ④ 报告列
+`app | 启动类型 | TTID均值 | TTFD均值 | WaitTime均值 | [vs基线差值] | [加速比]`
+
+### CLI
+```bash
+python -m apb capture --type startup --app com.android.chrome --repeat 10 --launch-type cold --run baseline
+python -m apb capture --type startup --app com.android.chrome --launch-type both --background-apps 5 --run variant
+```
+
+---
+
+## 测试项 2：帧率与 Jank (`jank`)
+
+**对应 Fleet**：Exp-4 jank/fps (Figure 14)
+
+### ① 测试内容
+app 前台持续滚动时的帧率稳定性与掉帧情况。
+
+### ② 预制环境
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `--app` | 必填 | 目标 app |
+| `--scroll-duration` | 30 | 滚动总秒数 |
+| `--scroll-mode` | swipe | `swipe`（向上滑）/ `fling`（快速滚动） |
+| `--scroll-scale` | 0.8 | 滑动幅度（屏宽比例） |
+| `--background-apps` | 0 | 后台预跑 N app 抢内存 |
+| `--warmup` | 5s | 启动后等待稳定时间（等 idle + 关弹窗） |
+
+**流程**：`app_start(pkg, stop=True)` 冷启动 → 等 idle + `watch_context` 关弹窗 → （可选）后台预跑 N app → 起 trace → `swipe_ext("up", scale)` 循环 `scroll_duration` 秒 → 停 trace
+
+### ③ 分析的数据（每 app 一组）
+| 指标 | 公式/来源 |
+|---|---|
+| **FPS** | 帧数 / ((末 ts - 首 ts)/1e9) |
+| **jank ratio** | 相邻 `Choreographer#doFrame` 间隔 > 16.7ms 的帧数 / 总帧数 |
+| **jank_type 分解**（Android 12+） | FrameTimeline：AppDeadlineMissed / BufferStuffing / SurfaceFlingerDeadlineMissed / PredictionError 各占比 |
+| 帧间隔分布 | min / p50 / p95 / max (ms) |
+| 统计 | mean FPS、mean jank ratio |
+
+**注意**：jank_type 分解需 FrameTimeline（Android 12+，perfetto 数据源 `android.surfaceflinger.frametimelines`）。user 非 root 设备若用 atrace 降级，则无此分解，仅保留 doFrame 阈值法。
+
+### ④ 报告列
+`app | FPS均值 | jank ratio% | 帧间隔p95(ms) | 主要jank_type | [vs基线]`
+
+### CLI
+```bash
+python -m apb capture --type jank --app com.android.chrome --scroll-duration 30 --run baseline
+python -m apb capture --type jank --app com.twitter.android --scroll-duration 60 --background-apps 5 --run pressure
+```
+
+---
+
+## 测试项 3：缓存容量 / 内存压力 (`cache`)
+
+**对应 Fleet**：Exp-1 (Figure 11c)
+
+### ① 测试内容
+连续启动多个 app 后，系统仍能缓存（不杀进程）的 app 数量，反映内存管理能力。
+
+### ② 预制环境
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `--app-list` | config.py 默认 18 app | 逗号分隔的包名列表 |
+| `--use-duration` | 30 | 每个 app 前台使用秒数（滚动交互） |
+| `--preloaded` | 0 | 预先常驻 N 个 app 不计入扫描 |
+| `--with-mem-trace` | false | 同时抓 mem trace 做 android_mem 分析 |
+
+**流程**：`kill_all_apps()` 清空 → 对 app_list 每个 app：`app_start` → 前台滚动 `use_duration` 秒 → `press home` → **每步**调 `dumpsys meminfo` 扫包名统计缓存数
+
+### ③ 分析的数据
+| 指标 | 说明 |
+|---|---|
+| **缓存数序列** `cached_numbers=[n1,...]` | 每步（启动第 i 个 app 后）仍缓存的 app 数 |
+| 最终缓存数 / 峰值缓存数 | 序列末值 / max |
+| 每 app RSS / Java heap / Native heap | dumpsys meminfo 解析 |
+| 系统总内存 / 可用内存 | dumpsys meminfo |
+| lmkd 触发次数（若可得） | logcat 或 dropbox |
+
+**可视化**：缓存数随启动数的折线图（复刻 Fleet Fig 11c），按 run 多线对比
+
+### ④ 报告列
+`启动第N个app | 当前缓存数 | [基线缓存数] | [差值]`；末尾汇总：峰值缓存数对比
+
+### CLI
+```bash
+python -m apb capture --type cache --app-list "com.android.chrome,com.twitter.android,com.facebook.katana" --use-duration 30 --run baseline
+```
+
+---
+
+## 测试项 4（可选）：CPU 开销分解 (`cpu`)
+
+**对应 Fleet**：Exp-4 CPU
+
+### ① 测试内容
+app 运行时 CPU 耗时，分离 mutator（应用逻辑）与 GC 线程。
+
+### ② 预制环境
+同 jank（前台滚动），trace 配置加 `sched/sched_switch`。默认**不启用**，需 `--enable-cpu` 或直接 `--type cpu`。
+
+### ③ 分析的数据
+按线程聚合 `sched` slice 时长：
+- `thread.name == 'HeapTaskDaemon'` → GC
+- 其余属该 process → mutator
+- 归一化：`app_runtime / all_runtime × len(app_list)`
+
+返回：`app_runtime, app_mutator_runtime, app_gc_runtime, all_runtime, all_mutator_runtime, all_gc_runtime`（秒）
+
+### CLI
+```bash
+python -m apb capture --type cpu --app com.android.chrome --scroll-duration 30 --run baseline
+```

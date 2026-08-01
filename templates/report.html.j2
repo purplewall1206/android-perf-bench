@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Android 性能测试报告</title>
+<style>
+  body { font-family: -apple-system, "Segoe UI", Roboto, "Microsoft YaHei", sans-serif; margin: 2rem auto; max-width: 1100px; color: #222; line-height: 1.6; }
+  h1 { border-bottom: 2px solid #333; padding-bottom: .3rem; }
+  h2 { margin-top: 2rem; border-left: 4px solid #2a7; padding-left: .6rem; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+  th, td { border: 1px solid #ccc; padding: .35rem .5rem; text-align: right; }
+  th { background: #f4f4f4; }
+  td:first-child, th:first-child { text-align: left; }
+  .meta { color: #555; font-size: .9rem; background: #f9f9f9; padding: .6rem .8rem; border-radius: 4px; }
+  .diff-pos { color: #c33; font-weight: 600; }   /* 变差（如 jank↑、耗时↑）红 */
+  .diff-neg { color: #2a7; font-weight: 600; }   /* 变好 绿 */
+  img { max-width: 100%; margin: .5rem 0; border: 1px solid #eee; }
+  .footer { margin-top: 2rem; color: #888; font-size: .8rem; border-top: 1px solid #eee; padding-top: .6rem; }
+</style>
+</head>
+<body>
+<h1>Android 性能测试报告</h1>
+<div class="meta">
+  <strong>设备</strong>: {{ device.model }} ({{ device.brand }}) · Android {{ device.android_version }} (SDK {{ device.sdk }}) · {{ device.abi }}<br>
+  <strong>Root</strong>: {{ device.root_status }} · <strong>Trace 后端</strong>: {{ device.trace_backend }} · <strong>FrameTimeline</strong>: {{ device.frame_timeline }}<br>
+  <strong>生成时间</strong>: {{ generated_at }}
+</div>
+
+{% for bench in benchmarks %}
+<h2>{{ bench.title }}</h2>
+{% if bench.rows %}
+<table>
+  <thead><tr>{% for h in bench.columns %}<th>{{ h }}</th>{% endfor %}</tr></thead>
+  <tbody>
+  {% for row in bench.rows %}
+  <tr>{% for h in bench.columns %}<td>{{ row[h] }}</td>{% endfor %}</tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% if bench.summary %}<p><strong>汇总</strong>: {{ bench.summary }}</p>{% endif %}
+{% if bench.image %}<img src="{{ bench.image }}" alt="{{ bench.title }}">{% endif %}
+{% endfor %}
+
+<div class="footer">
+  本报告由 android-perf-bench 生成，测量方法学复刻自 Fleet (ASPLOS'24)。
+  startup: am start -W + android_startup (TTID/TTFD) · jank: Choreographer#doFrame 16.7ms + FrameTimeline · cache: dumpsys meminfo。
+</div>
+</body>
+</html>

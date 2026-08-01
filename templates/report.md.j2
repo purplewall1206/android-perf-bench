@@ -1,0 +1,32 @@
+# Android 性能测试报告
+
+**设备**: {{ device.model }} ({{ device.brand }}) · Android {{ device.android_version }} (SDK {{ device.sdk }}) · {{ device.abi }}
+**Root**: {{ device.root_status }} · **Trace 后端**: {{ device.trace_backend }} · **FrameTimeline**: {{ device.frame_timeline }}
+**生成时间**: {{ generated_at }}
+
+{% for bench in benchmarks %}
+## {{ bench.title }}
+
+{% if bench.rows %}
+| {% for h in bench.columns %}{{ h }} | {% endfor %}
+| {% for h in bench.columns %}--- | {% endfor %}
+{% for row in bench.rows %}
+| {% for h in bench.columns %}{{ row[h] }} | {% endfor %}
+{% endfor %}
+
+{% endif %}
+{% if bench.summary %}
+**汇总**: {{ bench.summary }}
+{% endif %}
+{% if bench.image %}
+![{{ bench.title }}]({{ bench.image }})
+{% endif %}
+{% endfor %}
+
+## 方法说明
+本报告由 android-perf-bench 生成，测量方法学复刻自 Fleet (ASPLOS'24)。
+- **startup**: `am start -W` (WaitTime/TotalTime) + perfetto `android_startup` (TTID/TTFD)
+- **jank**: SurfaceFlinger FrameTimeline (`actual_frame_timeline_slice`, Android 12+) 为主路径，`jank_type` 分解；`Choreographer#doFrame` 阈值法为备选（需 app debuggable/root）
+- **cache**: `dumpsys meminfo` 扫包名统计缓存数
+
+详见 `references/`。

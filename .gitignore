@@ -1,0 +1,24 @@
+# 运行产物（trace、报告、设备探测结果——含本地设备信息，不入库）
+scripts/out/
+
+# trace_processor_shell 等下载的二进制（setup 阶段自动下载，不入库）
+scripts/.bin/
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# 虚拟环境
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db

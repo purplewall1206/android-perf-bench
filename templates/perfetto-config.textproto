@@ -1,0 +1,56 @@
+# Perfetto trace 配置模板（textproto）。
+# 由 trace_capture.py 的 _render_config 参数化填充。
+# 用法：adb shell perfetto -c <此文件> --txt -o <out> --background
+#
+# 字段参考 https://perfetto.dev/docs/reference/trace-config-proto
+# 关键点：
+#   - 两个 buffer：[0] 给 ftrace(sched 海量事件，RING)，[1] 给 FrameTimeline + process_stats(不被覆盖)
+#   - 数据源名 android.surfaceflinger.frametimeline（注意无 s），Android 12+，user 版可用
+#   - atrace_apps 抓 app 标签（如 Choreographer#doFrame），非 debuggable app 需 root
+
+duration_ms: {{DURATION_MS}}
+
+# buffer 0: ftrace（sched_switch 海量，RING 覆盖旧数据）
+buffers {
+  size_kb: {{BUFFER_KB}}
+}
+# buffer 1: FrameTimeline + process_stats（小数据，RING 但单独空间不被 sched 挤掉）
+buffers {
+  size_kb: 32768
+}
+
+# ftrace: 内核事件 + atrace 类别 + 目标 app → buffer 0
+data_sources {
+  config {
+    name: "linux.ftrace"
+    target_buffer: 0
+    ftrace_config {
+      buffer_size_kb: 32768
+      drain_period_ms: 1000
+      {{SCHED_EVENTS}}
+      atrace_categories: "gfx"
+      atrace_categories: "view"
+      atrace_categories: "am"
+      atrace_categories: "wm"
+      atrace_categories: "ss"
+      atrace_categories: "input"
+      {{ATRACE_SCHED}}
+      atrace_apps: "{{APP_PKG}}"
+    }
+  }
+}
+
+# 进程/线程信息 → buffer 1
+data_sources {
+  config {
+    name: "linux.process_stats"
+    target_buffer: 1
+    process_stats_config {
+      scan_all_processes_on_start: true
+      record_thread_names: true
+    }
+  }
+}
+
+# FrameTimeline（jank_type 分解，Android 12+，user 版可用，无需 root）→ buffer 1
+{{FRAMETIMELINE_BLOCK}}
