@@ -37,7 +37,7 @@ def main(argv: list[str] | None = None) -> int:
     p_cap.add_argument("--app-list", default=None, help="逗号分隔的包名列表（cache）")
     p_cap.add_argument("--run", default="baseline", help="本次 run 的名字（如 baseline/variant）")
     # startup
-    p_cap.add_argument("--repeat", type=int, default=None, help="启动重复次数（startup）")
+    p_cap.add_argument("--repeat", type=int, default=None, help="重复轮数（startup 启动轮次 / jank 滚动轮次，默认 startup=10/jank=3）")
     p_cap.add_argument("--launch-type", default="cold", choices=["cold", "hot", "both"], help="启动类型")
     # jank / cpu
     p_cap.add_argument("--scroll-duration", type=int, default=None, help="滚动秒数（jank/cpu）")

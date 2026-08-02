@@ -96,9 +96,16 @@ def jank_table(runs: dict[str, dict], baseline: str) -> dict:
             fps = jank = None
             for item in data.get("items", []):
                 if item.get("app") == app:
-                    pr = item.get("analysis", {}).get("primary", {})
-                    fps = pr.get("fps")
-                    jank = pr.get("jank_ratio")
+                    an = item.get("analysis", {})
+                    # 优先用多轮聚合值，回退到 primary（单轮/兼容）
+                    fps = an.get("fps_mean")
+                    jank = an.get("jank_ratio_mean")
+                    if fps is None or jank is None:
+                        pr = an.get("primary", {})
+                        if fps is None:
+                            fps = pr.get("fps")
+                        if jank is None:
+                            jank = pr.get("jank_ratio")
                     if jank is not None:
                         jank *= 100
                     break
@@ -111,9 +118,9 @@ def jank_table(runs: dict[str, dict], baseline: str) -> dict:
             lf = lj = None
             for item in runs[last].get("items", []):
                 if item.get("app") == app:
-                    pr = item.get("analysis", {}).get("primary", {})
-                    lf = pr.get("fps")
-                    lj = pr.get("jank_ratio")
+                    an = item.get("analysis", {})
+                    lf = an.get("fps_mean") or an.get("primary", {}).get("fps")
+                    lj = an.get("jank_ratio_mean") or an.get("primary", {}).get("jank_ratio")
                     break
             row[f"vs {baseline}\nFPS Δ"] = _fmt((lf - base_fps) if lf is not None and base_fps is not None else None)
             row[f"vs {baseline}\nJank Δ"] = _fmt(
@@ -192,7 +199,7 @@ def camera_table(runs: dict[str, dict], baseline: str) -> dict:
     rows = []
     metrics_pairs = [
         ("相机启动延迟 (ms)", "camera_launch_ms_mean"),
-        ("相机后存活 app 数", "survived_after_camera_mean"),
+        ("相机后存活 app 数", "alive_apps_mean"),
         ("最低 MemAvailable (MB)", None),  # 特殊处理 KB→MB
     ]
     for label, key in metrics_pairs:

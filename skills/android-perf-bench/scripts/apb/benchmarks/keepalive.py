@@ -154,15 +154,30 @@ def run(dev: Device, args, env: dict, app_list: list[str]) -> list[dict]:
     # 汇总
     mem_values = [s["memavailable_kb"] for s in samples if s.get("memavailable_kb") is not None]
     alive_values = [s["alive_count"] for s in samples]
+
+    # proc 时序数据单独写文件（keepalive 不录 perfetto，proc 是唯一数据来源）
+    import json
+    config.ensure_dirs()
+    proc_file = config.RESULT_DIR / f"{args.run}_keepalive_proc.json"
+    proc_data = {
+        "run": args.run, "type": "keepalive_proc",
+        "params": {"foreground_s": foreground, "background_wait_s": bg_wait,
+                   "target_count": target, "actual_count": len(target_apps),
+                   "workload": workload, "rounds": rounds},
+        "samples": samples,           # 完整时序：meminfo/vmstat/dumpsys-PSS/存活数
+        "launch_records": launch_records,
+    }
+    proc_file.write_text(json.dumps(proc_data, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(f"[keepalive] proc 时序数据 → {proc_file}")
+
     summary = {
         "app": "__keepalive_summary__",
         "app_list": target_apps,
         "rounds": rounds,
-        "params": {"foreground_s": foreground, "background_wait_s": bg_wait,
-                   "target_count": target, "actual_count": len(target_apps),
-                   "workload": workload, "rounds": rounds},
-        "samples": samples,
+        "params": proc_data["params"],
+        "proc_file": str(proc_file),   # 指向独立 proc 文件
         "launch_records": launch_records,
+        # 只放统计值（原始时序在 proc_file）
         "mem_stats": {
             "mean_kb": round(sum(mem_values) / len(mem_values), 1) if mem_values else None,
             "min_kb": min(mem_values) if mem_values else None,

@@ -72,6 +72,22 @@ FROM counters
 WHERE name = 'vmscan/direct_reclaim_begin';
 """
 
+# MemAvailable 时序曲线（从 process_stats 的 meminfo counters；替代 camera_reload 删掉的 _memavailable）
+# counters 表的 meminfo 字段：MemAvailable 等，由 traced_probes 周期采样写入
+SQL_MEMAVAILABLE_CURVE = """
+SELECT ts, value AS memavailable_kb
+FROM counters
+WHERE name = 'MemAvailable'
+ORDER BY ts;
+"""
+
+# 本轮 trace 期间存活的目标 app 进程数（从 process 表，替代删掉的 cached_apps）
+SQL_ALIVE_APPS = """
+SELECT COUNT(DISTINCT name) AS alive_count
+FROM process
+WHERE name IN ({pkgs});
+"""
+
 # 相机进程在 trace 里的最早 slice ts（近似 apk 启动时刻，作为 first buffer 起点）
 SQL_PROCESS_FIRST_TS = """
 SELECT min(ts) AS ts
@@ -158,13 +174,11 @@ def analyze_cpu_trace(trace_path: str, pkg: str, n_apps: int, env: dict) -> dict
     return {"app": pkg, **metrics.cpu_breakdown(rows, pkg, n_apps)}
 
 
-def analyze_camera_trace(trace_path: str, env: dict, camera_pkg: str = "") -> dict:
-    """从相机阶段的 trace 提取：direct reclaim + 相机 first full buffer。
+def analyze_camera_trace(trace_path: str, env: dict, camera_pkg: str = "",
+                         target_apps: list[str] | None = None) -> dict:
+    """从单轮 camera trace 提取：direct reclaim + 相机 first buffer + MemAvailable 曲线 + 存活数。
 
-    多数指标（am 测的启动延迟、存活数、MemAvailable）已在 capture 阶段算好，
-    trace 补充：
-      - direct reclaim 次数（vmscan ftrace，论文 A.1 指标）
-      - 相机 first full buffer（apk 启动 → SurfaceFlinger 收到相机预览首帧）
+    camera_reload 已删掉单独 proc 采样（_memavailable/cached_apps），全部改从 perfetto 提取。
     """
     out = {}
     # direct reclaim
@@ -175,10 +189,33 @@ def analyze_camera_trace(trace_path: str, env: dict, camera_pkg: str = "") -> di
     except Exception:
         pass
 
-    # 相机 first full buffer：需 camera_pkg 定位启动起点 + FrameTimeline 找首帧
+    # MemAvailable 曲线（从 process_stats counters）
+    try:
+        ma_rows = query_sql(trace_path, SQL_MEMAVAILABLE_CURVE, env, quiet=True)
+        if ma_rows:
+            ma_values = [int(r["memavailable_kb"]) for r in ma_rows
+                         if r.get("memavailable_kb") is not None]
+            if ma_values:
+                out["memavailable_curve"] = [{"ts": r.get("ts"), "kb": int(r["memavailable_kb"])}
+                                             for r in ma_rows]
+                out["memavailable_min_kb"] = min(ma_values)
+                out["memavailable_mean_kb"] = round(sum(ma_values) / len(ma_values), 1)
+    except Exception:
+        pass
+
+    # 相机后存活的目标 app 数（从 process 表）
+    if target_apps:
+        try:
+            pkgs = ",".join(f"'{p}'" for p in target_apps)
+            alive_rows = query_sql(trace_path, SQL_ALIVE_APPS.format(pkgs=pkgs), env, quiet=True)
+            if alive_rows:
+                out["alive_apps_count"] = int(alive_rows[0].get("alive_count") or 0)
+        except Exception:
+            pass
+
+    # 相机 first full buffer
     if camera_pkg:
         try:
-            # 起点：相机进程在 trace 里的第一个 slice ts（近似 apk 启动时刻）
             launch_rows = query_sql(trace_path,
                 SQL_PROCESS_FIRST_TS.format(pkg=camera_pkg), env, quiet=True)
             launch_ts = int(launch_rows[0]["ts"]) if launch_rows and launch_rows[0].get("ts") else 0
@@ -186,7 +223,7 @@ def analyze_camera_trace(trace_path: str, env: dict, camera_pkg: str = "") -> di
                 ft_rows = query_sql(trace_path, SQL_FRAMETIMELINE, env, quiet=True)
                 fb = metrics.camera_first_buffer(ft_rows, camera_pkg, launch_ts)
                 if fb.get("found"):
-                    out["first_full_buffer_ms"] = fb["first_buffer_ms"]
+                    out["first_full_buffer_ms"] = fb["first_full_buffer_ms"]
                     out["first_full_buffer_layer"] = fb["layer_name"]
         except Exception as e:
             out["first_buffer_error"] = str(e)[:200]
@@ -214,11 +251,29 @@ def analyze_run(run_name: str, env: dict) -> dict:
                     tr, item["app"], item.get("am_results", []), env)
     elif bench_type in ("jank", "cpu"):
         for item in result["items"]:
-            tr = item.get("trace")
-            if tr and Path(tr).exists():
-                if bench_type == "jank":
-                    item["analysis"] = analyze_jank_trace(tr, item["app"], env)
-                else:
+            if bench_type == "jank":
+                # jank 多轮：分析每轮 trace，聚合 FPS/jank 统计
+                traces = item.get("traces") or ([item["trace"]] if item.get("trace") else [])
+                per_round, all_fps, all_jank = [], [], []
+                for idx, tr in enumerate(traces):
+                    if tr and Path(tr).exists():
+                        an = analyze_jank_trace(tr, item["app"], env)
+                        an["round"] = idx + 1
+                        per_round.append(an)
+                        p = an.get("primary", {})
+                        if p.get("fps") is not None:
+                            all_fps.append(p["fps"])
+                        if p.get("jank_ratio") is not None:
+                            all_jank.append(p["jank_ratio"])
+                item["analysis"] = {
+                    "per_round": per_round,
+                    "primary": per_round[-1]["primary"] if per_round else {},
+                    "fps_mean": round(sum(all_fps)/len(all_fps), 1) if all_fps else None,
+                    "jank_ratio_mean": round(sum(all_jank)/len(all_jank), 3) if all_jank else None,
+                }
+            else:
+                tr = item.get("trace")
+                if tr and Path(tr).exists():
                     item["analysis"] = analyze_cpu_trace(
                         tr, item["app"], raw.get("n_apps", 1), env)
     elif bench_type == "cache":
@@ -227,24 +282,41 @@ def analyze_run(run_name: str, env: dict) -> dict:
             item.setdefault("analysis",
                             metrics.cache_summary(item.get("cached_numbers", [])))
     elif bench_type == "camera":
-        # camera 主要指标在 capture 阶段已算好；trace 补充 direct reclaim + first full buffer
+        # camera 每轮一个 trace；遍历 camera_results 分析每轮
         for item in result["items"]:
-            analysis = {k: v for k, v in item.items()
-                        if k in ("mem_stats", "pre_camera", "camera_results",
-                                 "camera_launch_ms_mean", "survived_after_camera_mean",
-                                 "memavailable_min_kb", "launch_times")}
-            tr = item.get("trace")
+            target_apps = item.get("app_list", [])
             cam_pkg = item.get("camera_pkg", "")
-            if tr and Path(tr).exists():
-                analysis.update(analyze_camera_trace(tr, env, cam_pkg))
-            item["analysis"] = analysis
+            per_round = []
+            for cr in item.get("camera_results", []):
+                tr = cr.get("trace")
+                rd_analysis = {"round": cr.get("round"),
+                               "camera_wait_time_ms": cr.get("camera_wait_time_ms")}
+                if tr and Path(tr).exists():
+                    rd_analysis.update(analyze_camera_trace(tr, env, cam_pkg, target_apps))
+                per_round.append(rd_analysis)
+            item["analysis"] = {
+                "camera_launch_ms_mean": item.get("camera_launch_ms_mean"),
+                "per_round": per_round,
+                # 聚合：first buffer 均值、MemAvailable 最低、存活均值
+                "first_full_buffer_ms_mean": (
+                    round(sum(r["first_full_buffer_ms"] for r in per_round
+                              if r.get("first_full_buffer_ms") is not None) / len(per_round), 1)
+                    if any(r.get("first_full_buffer_ms") is not None for r in per_round) else None),
+                "memavailable_min_kb": min(
+                    (r["memavailable_min_kb"] for r in per_round
+                     if r.get("memavailable_min_kb") is not None), default=None),
+                "alive_apps_mean": (
+                    round(sum(r["alive_apps_count"] for r in per_round
+                              if r.get("alive_apps_count") is not None) / len(per_round), 1)
+                    if any(r.get("alive_apps_count") is not None for r in per_round) else None),
+            }
     elif bench_type == "keepalive":
-        # keepalive 指标在 capture 阶段已算好（samples + launch_records + mem/alive 统计）
+        # keepalive 不录 perfetto；统计值在 capture 算好，原始时序在 proc_file
         for item in result["items"]:
             item["analysis"] = {k: v for k, v in item.items()
-                                if k in ("params", "samples", "launch_records",
+                                if k in ("params", "launch_records",
                                          "mem_stats", "alive_stats",
-                                         "memavailable_min_kb", "alive_max")}
+                                         "memavailable_min_kb", "alive_max", "proc_file")}
 
     out_path = config.RESULT_DIR / f"{run_name}.json"
     out_path.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")

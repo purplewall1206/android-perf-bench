@@ -1,17 +1,14 @@
-"""测试项：重载相机 (camera_reload)。
+"""测试项：重载相机 (camera_reload)。复刻 ATC'26 A2 论文 Appendix A.1。
 
-复刻 ATC'26 A2 论文 Appendix A.1 的 Shared Benchmark Workload：
-  依次启动 N 个 app（每个做代表性动作后切后台，部分保活音频/导航）→
-  最后启动相机制造内存压力峰值。
+按轮次的完整流程（每轮 rounds）：
+  ① 小刷子清后台（clear_recent_apps，setup 探测）
+  ② 启 perfetto（覆盖本轮 N app 加压 + 相机启动，记录全程内存曲线）
+  ③ 启动 N 个 app 加压（不 force-stop，让厂商自然保活）
+  ④ 启动相机（不 force-stop，靠小刷子已清 + 系统自然状态）
+每轮一个 trace，analyze 从 perfetto 提取 MemAvailable 曲线/存活数/direct reclaim/相机 first buffer。
 
-测量 5 个指标（论文 A.1）：
-  1. 整轮 MemAvailable 均值/最低值（内存压力曲线）
-  2. direct reclaim 次数（内核回收压力，需 trace）
-  3. 相机启动延迟（camera launch latency，am start -W + trace）
-  4. 相机启动后存活的后台 app 数（keep-alive after camera）
-  5. 各 app 冷/热启动时间（可选，startup benchmark 已覆盖）
-
-规格见 references/benchmark-specs.md。
+注意：proc 信息（MemAvailable/存活数）全部从 perfetto trace 解析，不单独抓（perfetto 已含
+process_stats + packages_list）。相机启动延迟 = apk 启动 → first full buffer。
 """
 from __future__ import annotations
 
@@ -23,8 +20,7 @@ from ..trace_capture import capture
 
 
 def _detect_camera(dev: Device, env: dict) -> str:
-    """探测设备上实际存在的相机包名。优先用 setup 阶段探测的 env['camera_pkg']，
-    否则按品牌从 first_party_candidates 精确匹配（避免 cameraextensions 误判）。"""
+    """探测设备上实际存在的相机包名。优先用 env['camera_pkg']，否则按品牌精确匹配。"""
     if env.get("camera_pkg"):
         return env["camera_pkg"]
     rc, out = dev.shell("pm", "list", "packages", timeout=15)
@@ -37,47 +33,29 @@ def _detect_camera(dev: Device, env: dict) -> str:
     for pkg in config.first_party_candidates("camera", brand):
         if pkg in installed:
             return pkg
-    for pkg in config.CAMERA_PACKAGES:  # 全厂商兜底
+    for pkg in config.CAMERA_PACKAGES:
         if pkg in installed:
             return pkg
     return "com.android.camera"
 
 
-def _memavailable(dev: Device) -> int | None:
-    """读当前 MemAvailable (KB)。"""
-    rc, out = dev.shell("cat", "/proc/meminfo", timeout=10)
-    if rc != 0:
-        return None
-    for line in out.splitlines():
-        if line.startswith("MemAvailable:"):
-            try:
-                return int(line.split()[1])
-            except (IndexError, ValueError):
-                return None
-    return None
-
-
 def _app_action(dev: Device, pkg: str, duration: int) -> None:
-    """app 启动后等待进程稳定（占内存）。不做手势——保活 app 抢前台时手势会在错误界面操作，
-    且 camera_reload 测的是内存压力（进程启动即占内存），不依赖 app 在前台。"""
+    """app 启动后等待进程稳定（占内存）。不做手势——保活 app 抢前台时手势会在错误界面操作。"""
     time.sleep(duration)
 
 
 def run(dev: Device, args, env: dict, app_list: list[str]) -> list[dict]:
-    """跑 camera_reload benchmark。
-
-    app_list 来源：优先 --app-list（逗号分隔）；否则用 A2 论文 23-app 列表（仅取设备已装的）。
-    """
     use_duration = getattr(args, "camera_use_duration", None) or config.DEFAULT_CAMERA_USE_DURATION
     interval = getattr(args, "camera_interval", None) or config.DEFAULT_CAMERA_INTERVAL
-    camera_repeat = getattr(args, "camera_repeat", 3) or 3
+    rounds = camera_repeat = getattr(args, "camera_repeat", 3) or 3
+    launch_method = getattr(args, "launch_method", "auto")
+    cleanup_cfg = env.get("recent_cleanup", {})
 
-    # 构建本轮要跑的 app 序列
+    # 构建 app 列表
     if args.app_list:
         target_apps = [a.strip() for a in args.app_list.split(",") if a.strip()]
     else:
-        # 论文 23-app 列表，过滤出设备已装的
-        a2_pkgs = [p[0] for p in config.A2_BENCHMARK_APPS]
+        a2_pkgs = config.build_a2_app_list(env.get("brand", ""))
         rc, out = dev.shell("pm", "list", "packages", timeout=20)
         installed = set()
         for line in (out or "").splitlines():
@@ -85,125 +63,69 @@ def run(dev: Device, args, env: dict, app_list: list[str]) -> list[dict]:
                 installed.add(line.split(":", 1)[1].strip())
         target_apps = [p for p in a2_pkgs if p in installed]
         if len(target_apps) < 3:
-            print(f"[camera_reload] 设备上论文 app 装得太少（{len(target_apps)} 个），改用传入/默认 app_list")
             target_apps = [a for a in app_list if a in installed][:8]
 
     camera_pkg = _detect_camera(dev, env)
-    # 内存提示：大内存设备若 app 数偏少，提示可加更多 app 加压
+    # 内存提示
     mem_gb = env.get("memtotal_gb")
     if mem_gb and not args.app_list and len(target_apps) < config.recommended_app_count(env.get("memtotal_kb")):
         print(f"[camera_reload] 提示：设备 {mem_gb}GB，当前仅 {len(target_apps)} 个加压 app，"
-              f"建议 --app-list 指定更多 app（推荐 {config.recommended_app_count(env.get('memtotal_kb'))} 个）以充分加压")
-    # camera_repeat 语义：完整加压流程（N app → 相机×1）重复的轮数（论文 500 轮）
-    rounds = camera_repeat
-    # 估算单轮时长用于 perfetto duration（N app × use_duration + 相机 ~6s + 余量）
-    per_round_s = len(target_apps) * (use_duration + interval + 2) + 8
-    print(f"\n[camera_reload] 完整加压流程重复 {rounds} 轮")
-    print(f"  每轮：{len(target_apps)} 个 app 依次启动(前台{use_duration}s/间隔{interval}s) → 最后启动相机 {camera_pkg} 一次")
-    print(f"  论文 A.1：连开多 app + 相机制造内存压力峰值，整个流程重复测系统持续压力下表现")
+              f"建议 --app-list 指定更多（推荐 {config.recommended_app_count(env.get('memtotal_kb'))} 个）")
+
+    print(f"\n[camera_reload] {len(target_apps)} 个 app × {rounds} 轮（每轮：小刷子→trace→N app加压→相机）")
+    print(f"  相机: {camera_pkg}，proc 信息全从 perfetto trace 解析")
 
     dev.unlock()
-    dev.kill_all(target_apps + [camera_pkg])
-    time.sleep(2)
+    camera_results = []
 
-    mem_curve = []           # 全程 MemAvailable 采样
-    launch_times = []        # 每个 app 每轮的启动时间
-    camera_results = []      # 每轮相机的指标
-    started_apps = list(target_apps)
+    for rd in range(rounds):
+        print(f"\n  ── 第 {rd+1}/{rounds} 轮 ──")
+        # ① 小刷子清后台（不 kill_all，让 recent 小刷子 + 系统自然）
+        dev.clear_recent_apps(app_list=target_apps + [camera_pkg], cleanup_cfg=cleanup_cfg)
+        time.sleep(1)
 
-    # 测试前清后台（点击最近任务全清，不可用则 force-stop 兜底）
-    print("[camera_reload] 清理后台...")
-    dev.clear_recent_apps(app_list=target_apps + [camera_pkg],
-                          cleanup_cfg=env.get("recent_cleanup", {}))
-
-    # trace 覆盖整个多轮测试
-    total_dur = max(per_round_s * rounds, 20)
-    with capture(dev, camera_pkg, duration_s=total_dur, run=args.run,
-                 name="camera", env=env, include_sched=True):
-        for rd in range(rounds):
-            print(f"\n  ── 第 {rd+1}/{rounds} 轮 ──")
-            # ── 阶段A：依次启动所有 app（启动→使用→press home→下一个，模拟真实用户）──
-            launch_method = getattr(args, "launch_method", "auto")
+        # ②③④ 启 perfetto（覆盖全程）→ N app 加压 → 相机
+        per_round_s = len(target_apps) * (use_duration + interval + 2) + 10
+        with capture(dev, camera_pkg, duration_s=per_round_s, run=args.run,
+                     name=f"camera_r{rd}", env=env, include_sched=True):
+            # ③ 启动 N 个 app 加压（不 force-stop，自然保活）
             for i, pkg in enumerate(target_apps):
-                step_idx = rd * len(target_apps) + i
-                mb = _memavailable(dev)
-                if mb is not None:
-                    mem_curve.append({"round": rd+1, "step": step_idx,
-                                      "phase": "pre_launch", "app": pkg, "memavailable_kb": mb})
-                # 记录启动时间（am start -W）+ 统一启动（auto: adb优先，被拦则点击）
                 am_res = dev.am_start_w(pkg)
-                lr = dev.launch_app(pkg, method=launch_method)
-                launch_times.append({"round": rd+1, "app": pkg,
-                                     "wait_time_ms": am_res.get("wait_time"),
-                                     "state": am_res.get("launch_state"),
-                                     "launch_method": lr.get("method_used"),
-                                     "on_front": lr.get("on_front")})
+                dev.launch_app(pkg, method=launch_method)
                 _app_action(dev, pkg, use_duration)
-                dev.home()  # 上滑/press home 回桌面，再启动下一个（真实用户节奏）
+                dev.home()
                 time.sleep(interval)
-                mb = _memavailable(dev)
-                if mb is not None:
-                    mem_curve.append({"round": rd+1, "step": step_idx,
-                                      "phase": "post_bg", "app": pkg, "memavailable_kb": mb})
 
-            # ── 阶段B：相机启动前存活数（每轮记录）──
-            pre_cam_cached = dev.cached_apps(set(started_apps))
-            pre_cam_mem = _memavailable(dev)
-
-            # ── 阶段C：启动相机一次（本轮压力峰值，同样 launch_app 统一启动）──
-            dev.force_stop(camera_pkg)
-            time.sleep(1)
+            # ④ 启动相机（本轮压力峰值；不 force_stop，靠小刷子已清 + 自然状态）
             am_res = dev.am_start_w(camera_pkg)
             dev.launch_app(camera_pkg, method=launch_method)
-            time.sleep(3)  # 等相机预览稳定，触发内存压力
-            wt = am_res.get("wait_time")
-            post_cam_cached = dev.cached_apps(set(started_apps))
-            post_cam_mem = _memavailable(dev)
-            camera_results.append({
-                "round": rd + 1,
-                "camera_wait_time_ms": wt,
-                "camera_state": am_res.get("launch_state"),
-                "pre_survived_count": len(pre_cam_cached),
-                "survived_apps": sorted(post_cam_cached),
-                "survived_count": len(post_cam_cached),
-                "pre_memavailable_kb": pre_cam_mem,
-                "memavailable_kb": post_cam_mem,
-            })
-            print(f"  轮 {rd+1}: 相机启动={wt}ms | 相机前存活 {len(pre_cam_cached)} → "
-                  f"相机后存活 {len(post_cam_cached)} app | MemAvail "
-                  f"{round(pre_cam_mem/1024) if pre_cam_mem else '?'}→"
-                  f"{round(post_cam_mem/1024) if post_cam_mem else '?'}MB")
-            dev.home()
-            time.sleep(1)
+            time.sleep(4)  # 等相机预览稳定，触发内存压力 + first buffer
 
-    # 统计
-    mem_values = [m["memavailable_kb"] for m in mem_curve if m.get("memavailable_kb") is not None]
-    run_dir = config.TRACE_DIR / args.run
-    camera_trace = run_dir / "camera.perfetto-trace"
-    if not camera_trace.exists():
-        camera_trace = run_dir / "camera.ftrace"
+        # 记录本轮（相机启动时间来自 am；MemAvailable/存活数/direct reclaim/first buffer 由 analyze 从 trace 提取）
+        trace = config.TRACE_DIR / args.run / f"camera_r{rd}.perfetto-trace"
+        if not trace.exists():
+            trace = config.TRACE_DIR / args.run / f"camera_r{rd}.ftrace"
+        camera_results.append({
+            "round": rd + 1,
+            "camera_pkg": camera_pkg,
+            "camera_wait_time_ms": am_res.get("wait_time"),
+            "camera_state": am_res.get("launch_state"),
+            "trace": str(trace) if trace.exists() else None,
+        })
+        print(f"  轮 {rd+1}: 相机启动={am_res.get('wait_time')}ms (MemAvailable/存活数/reclaim 见 trace 分析)")
+        dev.home()
+        time.sleep(1)
+
     summary = {
         "app": "__camera_reload_summary__",
         "app_list": target_apps,
         "camera_pkg": camera_pkg,
         "rounds": rounds,
-        "trace": str(camera_trace) if camera_trace.exists() else None,
-        "mem_curve": mem_curve,
-        "mem_stats": {
-            "mean_kb": round(sum(mem_values) / len(mem_values), 1) if mem_values else None,
-            "min_kb": min(mem_values) if mem_values else None,
-            "max_kb": max(mem_values) if mem_values else None,
-        },
         "camera_results": camera_results,
-        "launch_times": launch_times,
-        # 关键对比指标（供 report/compare 用）：多轮相机的统计
+        # 相机启动均值（am 测的；first buffer 由 analyze 补充）
         "camera_launch_ms_mean": (
             round(sum(c["camera_wait_time_ms"] for c in camera_results
                       if c["camera_wait_time_ms"] is not None) / len(camera_results), 1)
             if any(c["camera_wait_time_ms"] is not None for c in camera_results) else None),
-        "survived_after_camera_mean": (
-            round(sum(c["survived_count"] for c in camera_results) / len(camera_results), 1)
-            if camera_results else None),
-        "memavailable_min_kb": min(mem_values) if mem_values else None,
     }
     return [summary]
