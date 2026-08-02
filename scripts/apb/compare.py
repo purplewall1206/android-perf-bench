@@ -123,6 +123,59 @@ def jank_table(runs: dict[str, dict], baseline: str) -> dict:
     return {"columns": columns, "rows": rows}
 
 
+def camera_table(runs: dict[str, dict], baseline: str) -> dict:
+    """camera_reload 对比表：相机启动延迟 / 相机后存活数 / 最低 MemAvailable。
+
+    每个 run 一个 item（__camera_reload_summary__），从 analysis 读三个关键指标。
+    """
+    run_names = list(runs.keys())
+    columns = ["指标"] + run_names
+    if len(run_names) > 1:
+        columns += [f"vs {baseline}"]
+
+    def _get(run_data: dict, key: str):
+        for item in run_data.get("items", []):
+            an = item.get("analysis") or item
+            if key in an:
+                return an[key]
+        return None
+
+    rows = []
+    metrics_pairs = [
+        ("相机启动延迟 (ms)", "camera_launch_ms_mean"),
+        ("相机后存活 app 数", "survived_after_camera_mean"),
+        ("最低 MemAvailable (MB)", None),  # 特殊处理 KB→MB
+    ]
+    for label, key in metrics_pairs:
+        row = {"指标": label}
+        base_val = None
+        for rn in run_names:
+            if key:
+                v = _get(runs[rn], key)
+            else:
+                kb = _get(runs[rn], "memavailable_min_kb")
+                v = round(kb / 1024, 1) if kb else None
+            row[rn] = _fmt(v, places=1)
+            if rn == baseline:
+                base_val = v
+        if len(run_names) > 1 and base_val is not None:
+            last = run_names[-1]
+            if key:
+                lv = _get(runs[last], key)
+            else:
+                lkb = _get(runs[last], "memavailable_min_kb")
+                lv = round(lkb / 1024, 1) if lkb else None
+            if lv is not None and base_val != 0:
+                # 启动延迟/存活数：差值；MemAvailable：差值
+                row[f"vs {baseline}"] = _fmt(round(lv - base_val, 1), places=1)
+            else:
+                row[f"vs {baseline}"] = "-"
+        elif len(run_names) > 1:
+            row[f"vs {baseline}"] = "-"
+        rows.append(row)
+    return {"columns": columns, "rows": rows}
+
+
 def cache_table(runs: dict[str, dict], baseline: str) -> dict:
     run_names = list(runs.keys())
     # cache 每个 run 只有一个 item（__cache_summary__），取 cached_numbers 序列

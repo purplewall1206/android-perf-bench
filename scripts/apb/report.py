@@ -149,6 +149,39 @@ def _write_csv(table: dict, out_path: Path) -> None:
             w.writerow([row.get(c, "") for c in cols])
 
 
+def _plot_camera_mem(runs: dict[str, dict], out_path: Path) -> bool:
+    """camera_reload 的 MemAvailable 随启动步数的折线图（论文 Figure 1 风格）。"""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return False
+    fig, ax = plt.subplots(figsize=(8, 4))
+    plotted = False
+    for rn, data in runs.items():
+        for item in data.get("items", []):
+            curve = item.get("analysis", item).get("mem_curve") or item.get("mem_curve")
+            if not curve:
+                continue
+            xs = [c["step"] for c in curve]
+            ys = [c["memavailable_kb"] / 1024 for c in curve]  # KB→MB
+            ax.plot(xs, ys, marker=".", markersize=3, linewidth=1, label=rn)
+            plotted = True
+    if not plotted:
+        plt.close(fig)
+        return False
+    ax.set_xlabel("App launch step")
+    ax.set_ylabel("MemAvailable (MB)")
+    ax.set_title("Memory Pressure Curve (camera reload)")
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=110)
+    plt.close(fig)
+    return True
+
+
 def main(args: argparse.Namespace) -> int:
     config.ensure_dirs()
     run_files = [r.strip() for r in args.runs.split(",") if r.strip()]
@@ -194,6 +227,14 @@ def main(args: argparse.Namespace) -> int:
                            "rows": tbl["rows"], "image": img,
                            "summary": tbl.get("summary")})
         _write_csv(tbl, config.REPORT_DIR / "cache.csv")
+
+    if "camera" in groups:
+        tbl = compare.camera_table(groups["camera"], baseline)
+        img = "camera_mem.png" if _plot_camera_mem(groups["camera"], config.REPORT_DIR / "camera_mem.png") else None
+        benchmarks.append({"title": "重载相机 (camera_reload)", "columns": tbl["columns"],
+                           "rows": tbl["rows"], "image": img,
+                           "summary": "复刻 ATC'26 A2 论文 A.1：N app → 最后启动相机"})
+        _write_csv(tbl, config.REPORT_DIR / "camera.csv")
 
     # 全量 JSON
     (config.REPORT_DIR / "results.json").write_text(

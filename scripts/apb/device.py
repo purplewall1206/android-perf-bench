@@ -69,28 +69,63 @@ class Device:
 
     # ── uiautomator2 ─────────────────────────────────────────────
     def u2(self):
-        """懒加载 uiautomator2 连接。"""
+        """懒加载 uiautomator2 连接，掉线时自动重连。"""
         if self._u2 is None:
-            import uiautomator2 as u2
-            self._u2 = u2.connect(self.serial) if self.serial else u2.connect()
-            self._u2.implicitly_wait(10.0)
+            self._u2 = self._connect_u2()
+        else:
+            # 健康检查：掉线（设备休眠/重启）则重连一次
+            try:
+                self._u2.info
+            except Exception:
+                self._u2 = self._connect_u2()
         return self._u2
 
+    def _connect_u2(self):
+        import uiautomator2 as u2
+        conn = u2.connect(self.serial) if self.serial else u2.connect()
+        conn.implicitly_wait(10.0)
+        return conn
+
     # ── app 管理 ─────────────────────────────────────────────────
+    def resolve_activity(self, pkg: str) -> Optional[str]:
+        """解析 pkg 的 launcher activity（component），形如 'pkg/.MainActivity'。
+
+        用 cmd package resolve-activity --brief，比 monkey 更可靠。
+        失败返回 None（调用方应回退到 monkey 或纯包名）。
+        """
+        rc, out = self.shell("cmd", "package", "resolve-activity", "--brief", pkg, timeout=15)
+        if rc != 0:
+            return None
+        # 输出最后一行是 component（pkg/activity）；排除纯包名行和提示行
+        for line in reversed(out.splitlines()):
+            line = line.strip()
+            if line and "/" in line and not line.startswith("-"):
+                return line
+        return None
+
     def am_start_w(self, pkg: str, activity: Optional[str] = None,
                    stop: bool = False) -> dict:
         """am start -W，解析返回 {status, launch_state, total_time, wait_time, complete}。
 
-        复刻 Fleet parsing_adb_am_result。老版 Android 可能无 LaunchState 行。
+        activity 为 None 时自动 resolve_activity 解析 launcher activity（荣耀等 ROM
+        仅传包名不可靠，必须带真实 component 才能正确拉到前台）。
+        复刻 Fleet parsing_adb_am_result。
         """
-        comp = f"{pkg}/{activity}" if activity else pkg
+        if activity is None:
+            resolved = self.resolve_activity(pkg)
+            if resolved and "/" in resolved:
+                comp = resolved  # 已是 pkg/activity 形式
+            else:
+                comp = pkg  # 回退
+        else:
+            comp = f"{pkg}/{activity}"
         flags = ["-W"]
         if stop:
             flags.append("-S")
         rc, out = self.shell("am", "start", *flags, comp, timeout=60)
         res = {"status": "unknown", "launch_state": None,
                "total_time": None, "wait_time": None, "complete": None,
-               "raw": out}
+               "component": comp, "raw": out}
         for line in out.splitlines():
             line = line.strip()
             if line.startswith("Status:"):

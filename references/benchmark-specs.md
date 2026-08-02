@@ -152,3 +152,55 @@ app 运行时 CPU 耗时，分离 mutator（应用逻辑）与 GC 线程。
 ```bash
 python -m apb capture --type cpu --app com.android.chrome --scroll-duration 30 --run baseline
 ```
+
+---
+
+## 测试项：重载相机 (camera_reload)
+
+**对应论文**：ATC'26 A2 论文 Appendix A.1 (Shared Benchmark Workload)
+
+### ① 测试内容
+复刻 A2 论文的工业级内存压力基准：依次启动 N 个 app（每个做代表性动作后切后台）→ **最后重载相机制造内存压力峰值**。测系统在真实多 app 场景下的内存管理能力，以及相机这个高内存消耗场景下的表现。
+
+### ② 预制环境
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `--app-list` | 论文 23-app（取设备已装交集） | 逗号分隔的包名列表 |
+| `--camera-use-duration` | 5 | 每个 app 前台使用秒数 |
+| `--camera-interval` | 1 | 每个 app 启动间隔秒数（论文 A.1 用 1s） |
+| `--camera-repeat` | 3 | 相机重载重复次数（多次取均值） |
+
+**流程**（论文 A.1）：
+1. `kill_all` 清空 → 对 app_list 每个 app：`am start -W`（记启动时间）+ u2 兜底切前台 → 滚动使用 `camera_use_duration` 秒 → home 切后台 → 每步采样 `/proc/meminfo` 的 MemAvailable
+2. 所有 app 启动后、相机启动前：统计存活数 + MemAvailable
+3. **重载相机 × N 次**：`force-stop camera` → 起 perfetto trace → `am start -W camera`（记启动延迟）→ 等预览稳定触发内存压力 → 统计存活数 + MemAvailable
+
+**说明**：app 启动用 `resolve-activity` 解析真实 launcher activity + u2 `app_start` 兜底确保到前台（荣耀等 ROM 仅 `am start` 可能不切前台）。若 app 被其他保活 app 抢前台，跳过手势只等待——内存压力主要靠进程启动产生，不依赖手势。
+
+### ③ 分析的数据（论文 A.1 的 5 个指标）
+| 指标 | 来源 |
+|---|---|
+| 整轮 MemAvailable 均值/最低值 | `/proc/meminfo` 采样序列 |
+| direct reclaim 次数 | trace 的 `vmscan/direct_reclaim_begin`（需开 vmscan ftrace；user 版可能无此事件→0） |
+| **相机启动延迟** | `am start -W` 的 WaitTime（ms） |
+| **相机启动后存活的后台 app 数** | `dumpsys meminfo` 扫包名 |
+| 各 app 冷/热启动时间 | `am start -W` 的 WaitTime + LaunchState |
+
+**可视化**：MemAvailable 随启动步数的折线图（论文 Figure 1 风格）
+
+### ④ 报告列
+`指标 | 各 run 的值 | vs 基线`（相机启动延迟 / 相机后存活数 / 最低 MemAvailable）
+
+### CLI
+```bash
+# 默认用论文 23-app（自动取设备已装交集）+ 自动探测相机包名
+python -m apb capture --type camera --run baseline
+
+# 指定 app 列表 + 相机重载 5 次
+python -m apb capture --type camera \
+  --app-list "com.tencent.mm,com.ss.android.ugc.aweme,com.xingin.xhs" \
+  --camera-repeat 5 --run baseline
+```
+
+### 与 Fleet Exp-1 (cache) 的区别
+两者都"连开多 app 测缓存"，但 camera_reload 的**关键差异是最后启动相机制造内存压力峰值**——相机是内存消耗大户（预览缓冲、ISP），能逼出系统在极端压力下的 keep-alive 和启动表现，这是论文 A.1 的核心场景。

@@ -6,12 +6,13 @@
 
 ## 能测什么
 
-| 测试项 | 测什么 | 关键指标 | 对应 Fleet |
+| 测试项 | 测什么 | 关键指标 | 对应论文 |
 |---|---|---|---|
-| `startup` | App 冷/热/温启动耗时 | TTID, TTFD, WaitTime, TotalTime, CDF | Exp-3 (Fig 13) |
-| `jank` | 前台滚动帧率稳定性与掉帧 | FPS, jank ratio, jank_type 分解 | Exp-4 (Fig 14) |
-| `cache` | 内存缓存容量（连开多 app 后剩几个） | 每步缓存数序列, 峰值缓存数, 每 app RSS/Heap | Exp-1 (Fig 11c) |
-| `cpu`（可选） | CPU 开销，分离 mutator/GC 线程 | app/mutator/gc runtime | Exp-4 CPU |
+| `startup` | App 冷/热/温启动耗时 | TTID, TTFD, WaitTime, TotalTime, CDF | Fleet Exp-3 |
+| `jank` | 前台滚动帧率稳定性与掉帧 | FPS, jank ratio, jank_type 分解（FrameTimeline，user 版可用） | Fleet Exp-4 |
+| `cache` | 内存缓存容量（连开多 app 后剩几个） | 每步缓存数序列, 峰值缓存数, 每 app RSS/Heap | Fleet Exp-1 |
+| `camera` | 重载相机（内存压力峰值） | 相机启动延迟, 相机后存活 app 数, MemAvailable 曲线 | ATC'26 A2 (App A.1) |
+| `cpu`（可选） | CPU 开销，分离 mutator/GC 线程 | app/mutator/gc runtime | Fleet Exp-4 |
 
 ## 工作流（四阶段）
 
@@ -23,8 +24,14 @@ python -m apb setup --install-deps --init-u2
 
 # 阶段 1：抓 perfetto trace + 跑 workload
 python -m apb capture --type startup --app com.android.chrome --repeat 10 --run baseline
-python -m apb capture --type jank    --app com.android.chrome --scroll-duration 30 --run baseline
+python -m apb capture --type jank    --app com.chrome --scroll-duration 30 --run baseline
 python -m apb capture --type cache   --app-list "pkg1,pkg2,pkg3" --run baseline
+python -m apb capture --type camera  --run baseline   # 论文 A.1：N app → 最后重载相机
+
+# 阶段 2：用 trace_processor_shell 解析 trace，计算指标
+python -m apb analyze --run baseline
+
+# 阶段 3：生成对比报告（CSV/JSON + Markdown + HTML + 图）
 
 # 阶段 2：用 trace_processor_shell 解析 trace，计算指标
 python -m apb analyze --run baseline
@@ -36,6 +43,76 @@ python -m apb report --runs baseline.json,variant.json --baseline baseline
 `capture` 默认会自动接 `analyze`；也可用 `python -m apb run` 串联。
 
 报告输出到 `scripts/out/report/`：`report.md`（对比表格）+ `report.html` + `*.csv` + `*.png`（柱状/CDF/折线）。
+
+## 灵活配置测试负载
+
+测试的"负载"由一组 CLI 参数控制。**核心思路：跑两次（baseline / variant），对比报告自动算差值。** 变化任何一个负载参数构成新的 run，就能对比"加压 vs 不加压""长滚动 vs 短滚动""多 app vs 少 app"。
+
+### 负载参数总表
+
+| 参数 | 作用 | 默认 | 影响哪个测试 |
+|---|---|---|---|
+| `--app <pkg>` | 单 app 测试目标 | 必填 | startup / jank / cpu |
+| `--app-list "p1,p2,..."` | 多 app 列表 | 论文/Fleet 列表 | cache / camera |
+| `--repeat N` | 启动重复次数（统计样本量） | 10 | startup |
+| `--launch-type cold\|hot\|both` | 启动类型 | cold | startup |
+| `--scroll-duration S` | 滚动秒数（jank 采样窗口） | 30 | jank / cpu |
+| `--scroll-mode swipe\|fling` | 滚动方式 | swipe | jank / cpu |
+| `--scroll-scale 0~1` | 滑动幅度（屏宽比例） | 0.8 | jank / cpu |
+| `--warmup S` | 启动后等稳定秒数（关弹窗） | 5 | jank / cpu |
+| `--use-duration S` | cache 每 app 前台秒数 | 30 | cache |
+| `--camera-use-duration S` | camera 每 app 前台秒数 | 5 | camera |
+| `--camera-repeat N` | 相机重载次数 | 3 | camera |
+| **`--background-apps N`** | **后台预跑 N 个 app 制造内存压力** | 0 | startup / jank |
+| `--run <name>` | 本次 run 名（baseline/variant） | baseline | 全部 |
+
+### 典型负载场景
+
+**场景 1：测压力下的启动/帧率**（`--background-apps`）
+```bash
+# 无压力基线：Chrome 冷启动
+python -m apb capture --type startup --app com.android.chrome --repeat 10 --run baseline
+# 加压：后台先开 5 个 app 抢内存，再启动 Chrome
+python -m apb capture --type startup --app com.android.chrome --repeat 10 --background-apps 5 --run pressure
+python -m apb report --runs baseline.json,pressure.json --baseline baseline
+```
+
+**场景 2：测滚动时长对帧率的影响**（`--scroll-duration`）
+```bash
+python -m apb capture --type jank --app com.android.chrome --scroll-duration 10  --run short
+python -m apb capture --type jank --app com.android.chrome --scroll-duration 120 --run long
+```
+
+**场景 3：测缓存容量**（`--app-list` + `--use-duration`）
+```bash
+# 连开 8 个 app，每个用 30s，看最终缓存几个
+python -m apb capture --type cache --app-list "p1,p2,p3,p4,p5,p6,p7,p8" --use-duration 30 --run baseline
+```
+
+**场景 4：重载相机（ATC'26 A2 论文 A.1）**
+```bash
+# 默认用论文 23-app（自动取设备已装交集）+ 自动探测相机包名 + 重载 3 次
+python -m apb capture --type camera --run baseline
+# 自定义：指定 5 个 app + 相机重载 10 次（更稳定的统计）
+python -m apb capture --type camera --app-list "p1,p2,p3,p4,p5" --camera-repeat 10 --run baseline
+```
+
+**场景 5：对比不同 app 的性能**
+```bash
+python -m apb capture --type jank --app com.tencent.mm     --run wechat
+python -m apb capture --type jank --app com.ss.android.ugc.aweme --run douyin
+python -m apb report --runs wechat.json,douyin.json  # 多 run 自动对比
+```
+
+### 一键全量测试
+```bash
+python -m apb run --type all --app com.android.chrome    # startup + jank + cache + camera
+```
+
+### 注意事项（荣耀/华为等 MagicOS）
+- **app 启动用 u2 兜底**：`resolve-activity` 解析真实 launcher activity 后 `am start -W` 拿启动耗时，再用 u2 `app_start` 确保切到前台（仅 `am start` 可能不切前台）
+- **后台保活 app 干扰**：测试前建议 `am force-stop` 掉知乎/番茄等爱抢前台的 app；若 app 未到前台，benchmark 会自动跳过手势避免误触桌面
+- 相机包名自动探测（`com.hihonor.camera` / `com.huawei.camera` / `com.android.camera` 等）
 
 ## 关键技术决策
 
@@ -88,7 +165,7 @@ android-perf-bench/
         ├── metrics.py             # 指标计算（复刻 Fleet 公式）
         ├── compare.py             # 基线 vs 方案对比
         ├── report.py              # 阶段3：CSV/JSON/MD/HTML/图
-        └── benchmarks/            # startup / jank_fps / cache_mem (+ cpu)
+        └── benchmarks/            # startup / jank_fps / cache_mem / camera_reload (+ cpu)
 ```
 
 ## 安装与依赖
@@ -113,6 +190,11 @@ Settings app 滚动 12s 的 jank 分析：
 
 Chrome 冷启动 5 次：
 - WaitTime 均值 205ms（std 6ms，min 196，max 212，p95 212）
+
+重载相机（camera_reload，3 个 app → 相机×2，复刻 ATC'26 A2 论文 A.1）：
+- 相机启动延迟：均值 233.5ms（263ms / 204ms）
+- 相机启动后存活后台 app：3 个（全部存活）
+- 相机制造的内存压力：相机前 MemAvailable 3.8GB → 相机后 2.8-3.1GB（约 1GB 压力峰值）
 
 ## 与 Fleet 的关系
 

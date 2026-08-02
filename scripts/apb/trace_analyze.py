@@ -131,6 +131,13 @@ SELECT ts, dur, jank_type, on_time_finish, present_type, layer_name
 FROM actual_frame_timeline_slice;
 """
 
+# direct reclaim 次数（论文 A.1 指标 2，需 trace 开启 vmscan ftrace 事件；user 版可能无此事件→返回 0）
+SQL_DIRECT_RECLAIM = """
+SELECT count(*) AS direct_reclaim_count
+FROM counters
+WHERE name = 'vmscan/direct_reclaim_begin';
+"""
+
 SQL_CPU = """
 SELECT process.name AS process, thread.name AS thread, sum(dur) AS cpu_dur
 FROM sched
@@ -207,6 +214,22 @@ def analyze_cpu_trace(trace_path: str, pkg: str, n_apps: int, env: dict) -> dict
     return {"app": pkg, **metrics.cpu_breakdown(rows, pkg, n_apps)}
 
 
+def analyze_camera_trace(trace_path: str, env: dict) -> dict:
+    """从相机阶段的 trace 补充 direct reclaim 计数（论文 A.1 指标 2）。
+
+    多数指标（相机启动延迟、存活数、MemAvailable）已在 capture 阶段从 am/dumpsys/meminfo 算好，
+    trace 仅补充内核侧的 direct reclaim 次数（需开启 vmscan ftrace 事件；user 版可能无此事件→0）。
+    """
+    out = {}
+    try:
+        rows = query_sql(trace_path, SQL_DIRECT_RECLAIM, env, quiet=True)
+        if rows:
+            out["direct_reclaim_count"] = int(rows[0].get("direct_reclaim_count") or 0)
+    except Exception:
+        pass
+    return out
+
+
 # ── run 级汇总 ─────────────────────────────────────────────────────
 def analyze_run(run_name: str, env: dict) -> dict:
     """读取 out/results/<run>.raw.json（capture 阶段产出），补充 trace 分析，写出 <run>.json。"""
@@ -240,6 +263,17 @@ def analyze_run(run_name: str, env: dict) -> dict:
         for item in result["items"]:
             item.setdefault("analysis",
                             metrics.cache_summary(item.get("cached_numbers", [])))
+    elif bench_type == "camera":
+        # camera 主要指标在 capture 阶段已算好（存在 item 各字段）；trace 补充 direct reclaim
+        for item in result["items"]:
+            analysis = {k: v for k, v in item.items()
+                        if k in ("mem_stats", "pre_camera", "camera_results",
+                                 "camera_launch_ms_mean", "survived_after_camera_mean",
+                                 "memavailable_min_kb", "launch_times")}
+            tr = item.get("trace")
+            if tr and Path(tr).exists():
+                analysis.update(analyze_camera_trace(tr, env))
+            item["analysis"] = analysis
 
     out_path = config.RESULT_DIR / f"{run_name}.json"
     out_path.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")

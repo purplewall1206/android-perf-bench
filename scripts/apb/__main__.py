@@ -31,7 +31,7 @@ def main(argv: list[str] | None = None) -> int:
     # ── capture ────────────────────────────────────────────────────
     p_cap = sub.add_parser("capture", help="抓 trace + 跑 workload")
     p_cap.add_argument("--type", required=True,
-                       choices=["startup", "jank", "cache", "cpu", "all"],
+                       choices=["startup", "jank", "cache", "cpu", "camera", "all"],
                        help="测试类型")
     p_cap.add_argument("--app", default=None, help="目标 app 包名（startup/jank/cpu）")
     p_cap.add_argument("--app-list", default=None, help="逗号分隔的包名列表（cache）")
@@ -46,6 +46,10 @@ def main(argv: list[str] | None = None) -> int:
     p_cap.add_argument("--warmup", type=int, default=5, help="启动后等待稳定秒数")
     # cache
     p_cap.add_argument("--use-duration", type=int, default=None, help="每 app 前台秒数（cache）")
+    # camera_reload
+    p_cap.add_argument("--camera-repeat", type=int, default=3, help="相机重载重复次数（camera）")
+    p_cap.add_argument("--camera-use-duration", type=int, default=None, help="camera 模式每 app 前台秒数")
+    p_cap.add_argument("--camera-interval", type=int, default=None, help="camera 模式每 app 启动间隔秒数")
     # 通用
     p_cap.add_argument("--background-apps", type=int, default=0, help="后台预跑 N 个 app 制造内存压力")
     p_cap.add_argument("--serial", default=None)
@@ -63,7 +67,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # ── run (capture+analyze 串联) ─────────────────────────────────
     p_run = sub.add_parser("run", help="capture + analyze 串联（report 需单独跑）")
-    p_run.add_argument("--type", required=True, choices=["startup", "jank", "cache", "cpu", "all"])
+    p_run.add_argument("--type", required=True, choices=["startup", "jank", "cache", "cpu", "camera", "all"])
     p_run.add_argument("--app", default=None)
     p_run.add_argument("--app-list", default=None)
     p_run.add_argument("--run", default="baseline")
@@ -75,6 +79,9 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument("--warmup", type=int, default=5)
     p_run.add_argument("--use-duration", type=int, default=None)
     p_run.add_argument("--background-apps", type=int, default=0)
+    p_run.add_argument("--camera-repeat", type=int, default=3)
+    p_run.add_argument("--camera-use-duration", type=int, default=None)
+    p_run.add_argument("--camera-interval", type=int, default=None)
     p_run.add_argument("--serial", default=None)
 
     args = parser.parse_args(argv)

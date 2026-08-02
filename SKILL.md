@@ -70,6 +70,7 @@ python -m apb run --type all --app com.example.app                  # 三类实�
 | startup | App 冷/热启动耗时 | TTID, TTFD, WaitTime, CDF | Exp-3 (Fig 13) |
 | jank | 前台滚动帧率稳定性 | FPS, jank ratio, jank_type 分解（FrameTimeline，user 版可用） | Exp-4 (Fig 14) |
 | cache | 内存缓存容量 | 每步缓存数序列, 峰值缓存数 | Exp-1 (Fig 11c) |
+| camera | 重载相机（内存压力） | 相机启动延迟, 相机后存活 app 数, MemAvailable 曲线 | ATC'26 A2 (App A.1) |
 | cpu（可选） | CPU 开销 mutator/GC 分解 | app/mutator/gc runtime | Exp-4 CPU |
 
 **关键技术决策**：jank 分析用 SurfaceFlinger **FrameTimeline**（`actual_frame_timeline_slice`）作为主路径——它在 Android 12+ 的 **user 版（无 root）** 设备上完全可用，不依赖 app 的 atrace 标签。`Choreographer#doFrame` 阈值法作为备选（需 app debuggable 或 root）。已在荣耀 BKQ-AN00 (Android 16, user 版) 实测验证。
