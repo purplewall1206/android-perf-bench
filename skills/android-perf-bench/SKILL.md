@@ -65,23 +65,35 @@ python -m apb run --type all --app com.example.app                  # 三类实�
 
 ## 测试项速览
 
-| 测试项 | 测什么 | 关键指标 | 对应 Fleet |
-|---|---|---|---|
-| startup | App 冷/热启动耗时 | TTID, TTFD, WaitTime, CDF | Exp-3 (Fig 13) |
-| jank | 前台滚动帧率稳定性 | FPS, jank ratio, jank_type 分解（FrameTimeline，user 版可用） | Exp-4 (Fig 14) |
-| cache | 内存缓存容量 | 每步缓存数序列, 峰值缓存数 | Exp-1 (Fig 11c) |
-| camera | 重载相机（内存压力） | 相机启动延迟, 相机后存活 app 数, MemAvailable 曲线 | ATC'26 A2 (App A.1) |
-| keepalive | 保活压力（50 app × N 轮） | 存活 app 数, MemAvailable/vmstat/dumpsys 曲线 | A2 keep-alive |
-| cpu（可选） | CPU 开销 mutator/GC 分解 | app/mutator/gc runtime | Exp-4 CPU |
+| 测试项 | 测什么 | 加压方式 | 关键指标 | 对应论文 |
+|---|---|---|---|---|
+| `startup` | App 冷/热启动耗时 | 可选 `--background-apps N` | TTID, TTFD, WaitTime, CDF | Fleet Exp-3 |
+| `jank` | 前台滚动帧率稳定性 | 可选 `--background-apps N` | FPS, jank ratio, jank_type 分解（FrameTimeline，user 版可用） | Fleet Exp-4 |
+| `camera` | 重载相机（内存压力峰值） | N app 加压 → 最后相机 | 相机启动延迟(apk→first buffer), 相机后存活数, MemAvailable 曲线 | ATC'26 A2 |
+| `keepalive` | 保活模型（N app 连续启动） | N app 连续启动本身即加压 | 存活数曲线, MemAvailable/vmstat/dumpsys 时序, 每 app PSS | A2 keep-alive |
 
-**关键技术决策**：jank 分析用 SurfaceFlinger **FrameTimeline**（`actual_frame_timeline_slice`）作为主路径——它在 Android 12+ 的 **user 版（无 root）** 设备上完全可用，不依赖 app 的 atrace 标签。`Choreographer#doFrame` 阈值法作为备选（需 app debuggable 或 root）。已在荣耀 BKQ-AN00 (Android 16, user 版) 实测验证。
+> `cache` 已并入 keepalive（`--type cache` = keepalive 单轮 scroll 预设）。`cpu` 可选。
 
-详细规格见 `references/benchmark-specs.md`。每个测试项都支持 `--background-apps N` 在后台预跑 N 个 app 制造内存压力。
+## 统一时间轴范式
+
+**所有测试按轮次的完整流程**（startup/jank/camera 每轮都走，keepalive 例外）：
+```
+每轮 {
+  ① 小刷子清后台（clear_recent_apps，setup 探测的最近任务清理）
+  ② 加压（warm_background_apps 启动 X 个 app，不 force-stop，让厂商自然保活）
+  ③ 抓 trace（启 perfetto，全面数据源：sched/vmscan/camera/FrameTimeline/process_stats/log）
+  ④ 启动目标 / 测试动作
+  ⑤ 回桌面（home）再进下一轮（真实用户切换节奏）
+}
+```
+**keepalive 例外**：只在开始时小刷子清一次后台，之后连续启动 app 进桌面→下一个（测持续累积的保活压力），不录 perfetto，proc+dumpsys 单独写 `{run}_keepalive_proc.json`。
+
+**proc/trace 关系**：录了 perfetto 就不单独抓 proc（perfetto 一起抓了）；没录（keepalive）就单独抓并写文件。
+
+**关键技术决策**：jank 用 SurfaceFlinger **FrameTimeline**（`actual_frame_timeline_slice`）作为主路径——Android 12+ 的 **user 版（无 root）** 完全可用。trace 解析用 **perfetto python 库**（TraceProcessor API）。已在荣耀 BKQ-AN00 (Android 16, user 版) 实测验证。
+
+详细规格见 `references/benchmark-specs.md`。加压 app 数按设备内存自动推荐（16G→35/12G→30/8G→18）。
 
 ## 与 Fleet 的关系
 
-Fleet 测量的是它自研 ART/Kernel（GC-Swap 协同设计）的收益，需要刷自编 AOSP。本套件**复用其测量方法学**（trace 抓取方式、perfetto SQL、指标计算公式、CDF/柱状对比可视化），但**通用化**为任意手机的基线测试，对比维度换成"不同手机/不同系统配置/不同 app 版本"等。需要 root 之外的深度内核指标（Fleet Exp-0/Exp-2 的私有日志）不在本套件范围。
-
-## 默认 app 列表
-
-`apb/config.py` 内置 Fleet 的 18 个 app 包名（Twitter/Facebook/Instagram/YouTube/Chrome 等）作为默认。可覆盖：`--app-list "pkg1,pkg2"` 或改 config.py。
+Fleet 测量的是它自研 ART/Kernel（GC-Swap 协同设计）的收益，需要刷自编 AOSP。本套件**复用其测量方法学**（trace 抓取、perfetto SQL、指标公式、CDF/柱状对比），但**通用化**为任意手机的基线测试，对比维度换成"不同手机/不同系统配置/不同 app 版本"等。需要 root 之外的深度内核指标（Fleet Exp-0/Exp-2 的私有日志）不在范围。
