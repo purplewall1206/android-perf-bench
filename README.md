@@ -62,7 +62,7 @@ python -m apb report --runs baseline.json,variant.json --baseline baseline
 | `--warmup S` | 启动后等稳定秒数（关弹窗） | 5 | jank / cpu |
 | `--use-duration S` | cache 每 app 前台秒数 | 30 | cache |
 | `--camera-use-duration S` | camera 每 app 前台秒数 | 5 | camera |
-| `--camera-repeat N` | 相机重载次数 | 3 | camera |
+| `--camera-repeat N` | **完整加压流程（N app → 相机×1）重复轮数**（论文跑 500 轮） | 3 | camera |
 | **`--background-apps N`** | **后台预跑 N 个 app 制造内存压力** | 0 | startup / jank |
 | `--run <name>` | 本次 run 名（baseline/variant） | baseline | 全部 |
 
@@ -89,11 +89,11 @@ python -m apb capture --type jank --app com.android.chrome --scroll-duration 120
 python -m apb capture --type cache --app-list "p1,p2,p3,p4,p5,p6,p7,p8" --use-duration 30 --run baseline
 ```
 
-**场景 4：重载相机（ATC'26 A2 论文 A.1）**
+**场景 4：重载相机（ATC'26 A2 论文 A.1，完整加压流程多轮）**
 ```bash
-# 默认用论文 23-app（自动取设备已装交集）+ 自动探测相机包名 + 重载 3 次
+# 默认：论文 23-app（自动取设备已装交集）+ 自动探测相机 + 完整流程（N app→相机×1）跑 3 轮
 python -m apb capture --type camera --run baseline
-# 自定义：指定 5 个 app + 相机重载 10 次（更稳定的统计）
+# 自定义：5 个 app + 完整加压流程跑 10 轮（轮间不清后台，压力累积，统计更稳）
 python -m apb capture --type camera --app-list "p1,p2,p3,p4,p5" --camera-repeat 10 --run baseline
 ```
 

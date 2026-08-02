@@ -160,7 +160,7 @@ python -m apb capture --type cpu --app com.android.chrome --scroll-duration 30 -
 **对应论文**：ATC'26 A2 论文 Appendix A.1 (Shared Benchmark Workload)
 
 ### ① 测试内容
-复刻 A2 论文的工业级内存压力基准：依次启动 N 个 app（每个做代表性动作后切后台）→ **最后重载相机制造内存压力峰值**。测系统在真实多 app 场景下的内存管理能力，以及相机这个高内存消耗场景下的表现。
+复刻 A2 论文的工业级内存压力基准（论文叫 "app-launch stress"，跑了 500 轮）：**完整加压流程 = 依次启动 N 个 app（每个做代表性动作后切后台）→ 最后启动相机一次制造内存压力峰值**；这个完整流程重复多轮，轮间不清后台（压力累积），统计系统在持续压力下的 keep-alive、相机启动、MemAvailable 表现。
 
 ### ② 预制环境
 | 参数 | 默认 | 说明 |
@@ -168,12 +168,14 @@ python -m apb capture --type cpu --app com.android.chrome --scroll-duration 30 -
 | `--app-list` | 论文 23-app（取设备已装交集） | 逗号分隔的包名列表 |
 | `--camera-use-duration` | 5 | 每个 app 前台使用秒数 |
 | `--camera-interval` | 1 | 每个 app 启动间隔秒数（论文 A.1 用 1s） |
-| `--camera-repeat` | 3 | 相机重载重复次数（多次取均值） |
+| `--camera-repeat` | 3 | **完整加压流程（N app → 相机×1）重复的轮数**（论文跑 500 轮） |
 
-**流程**（论文 A.1）：
-1. `kill_all` 清空 → 对 app_list 每个 app：`am start -W`（记启动时间）+ u2 兜底切前台 → 滚动使用 `camera_use_duration` 秒 → home 切后台 → 每步采样 `/proc/meminfo` 的 MemAvailable
-2. 所有 app 启动后、相机启动前：统计存活数 + MemAvailable
-3. **重载相机 × N 次**：`force-stop camera` → 起 perfetto trace → `am start -W camera`（记启动延迟）→ 等预览稳定触发内存压力 → 统计存活数 + MemAvailable
+**单轮流程**（论文 A.1）：
+1. 对 app_list 每个 app：`am start -W`（记启动时间）+ u2 兜底切前台 → 滚动使用 `camera_use_duration` 秒 → home 切后台 → 每步采样 `/proc/meminfo` 的 MemAvailable
+2. 所有 app 启动后：统计存活数 + MemAvailable（相机前）
+3. **启动相机一次**（本轮压力峰值）：`force-stop camera` → `am start -W camera`（记启动延迟）→ 等预览稳定触发内存压力 → 统计存活数 + MemAvailable（相机后）
+
+整个单轮流程重复 `camera_repeat` 轮，**轮间不清后台**（压力累积，同论文 "without killing background"）。
 
 **说明**：app 启动用 `resolve-activity` 解析真实 launcher activity + u2 `app_start` 兜底确保到前台（荣耀等 ROM 仅 `am start` 可能不切前台）。若 app 被其他保活 app 抢前台，跳过手势只等待——内存压力主要靠进程启动产生，不依赖手势。
 
@@ -193,13 +195,13 @@ python -m apb capture --type cpu --app com.android.chrome --scroll-duration 30 -
 
 ### CLI
 ```bash
-# 默认用论文 23-app（自动取设备已装交集）+ 自动探测相机包名
+# 默认：论文 23-app（自动取设备已装交集）+ 自动探测相机包名 + 完整流程跑 3 轮
 python -m apb capture --type camera --run baseline
 
-# 指定 app 列表 + 相机重载 5 次
+# 指定 app 列表 + 完整加压流程跑 10 轮（更稳定的统计）
 python -m apb capture --type camera \
   --app-list "com.tencent.mm,com.ss.android.ugc.aweme,com.xingin.xhs" \
-  --camera-repeat 5 --run baseline
+  --camera-repeat 10 --run baseline
 ```
 
 ### 与 Fleet Exp-1 (cache) 的区别

@@ -47,7 +47,7 @@ def main(argv: list[str] | None = None) -> int:
     # cache
     p_cap.add_argument("--use-duration", type=int, default=None, help="每 app 前台秒数（cache）")
     # camera_reload
-    p_cap.add_argument("--camera-repeat", type=int, default=3, help="相机重载重复次数（camera）")
+    p_cap.add_argument("--camera-repeat", type=int, default=3, help="完整加压流程（N app→相机×1）重复轮数（camera，论文 A.1 跑 500 轮）")
     p_cap.add_argument("--camera-use-duration", type=int, default=None, help="camera 模式每 app 前台秒数")
     p_cap.add_argument("--camera-interval", type=int, default=None, help="camera 模式每 app 启动间隔秒数")
     # 通用
