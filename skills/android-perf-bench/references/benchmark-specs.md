@@ -20,7 +20,7 @@
 | `--app` | 必填 | 目标 app 包名（如 `com.android.chrome`） |
 | `--repeat` | 10 | 每个 app 重复启动次数 |
 | `--launch-type` | cold | `cold` / `hot` / `both` |
-| `--background-apps` | 0 | 启动前在后台预跑 N 个 app 制造内存压力（复刻 Fleet `start_all_apps`） |
+| `--background-apps` | 0 | 启动前在后台预跑 N 个 app 制造内存压力（复刻 Fleet `start_all_apps`）。**大内存设备建议设 8-10**（见 keepalive 对照表），不加压测不出压力下启动表现；未设置时 benchmark 会按内存给提示 |
 | `--clear-data` | true(cold) | 冷启动前 `pm clear` 清数据 |
 | `--cooldown` | 3s | 两次启动间冷却 |
 
@@ -65,7 +65,7 @@ app 前台持续滚动时的帧率稳定性与掉帧情况。
 | `--scroll-duration` | 30 | 滚动总秒数 |
 | `--scroll-mode` | swipe | `swipe`（向上滑）/ `fling`（快速滚动） |
 | `--scroll-scale` | 0.8 | 滑动幅度（屏宽比例） |
-| `--background-apps` | 0 | 后台预跑 N app 抢内存 |
+| `--background-apps` | 0 | 后台预跑 N app 抢内存（大内存设备建议 8-10，同 startup） |
 | `--warmup` | 5s | 启动后等待稳定时间（等 idle + 关弹窗） |
 
 **流程**：`app_start(pkg, stop=True)` 冷启动 → 等 idle + `watch_context` 关弹窗 → （可选）后台预跑 N app → 起 trace → `swipe_ext("up", scale)` 循环 `scroll_duration` 秒 → 停 trace
@@ -92,41 +92,19 @@ python -m apb capture --type jank --app com.twitter.android --scroll-duration 60
 
 ---
 
-## 测试项 3：缓存容量 / 内存压力 (`cache`)
+## 测试项 3：缓存容量 / 内存压力 (`cache`) — 已并入 keepalive
 
-**对应 Fleet**：Exp-1 (Figure 11c)
-
-### ① 测试内容
-连续启动多个 app 后，系统仍能缓存（不杀进程）的 app 数量，反映内存管理能力。
-
-### ② 预制环境
-| 参数 | 默认 | 说明 |
-|---|---|---|
-| `--app-list` | config.py 默认 18 app | 逗号分隔的包名列表 |
-| `--use-duration` | 30 | 每个 app 前台使用秒数（滚动交互） |
-| `--preloaded` | 0 | 预先常驻 N 个 app 不计入扫描 |
-| `--with-mem-trace` | false | 同时抓 mem trace 做 android_mem 分析 |
-
-**流程**：`kill_all_apps()` 清空 → 对 app_list 每个 app：`app_start` → 前台滚动 `use_duration` 秒 → `press home` → **每步**调 `dumpsys meminfo` 扫包名统计缓存数
-
-### ③ 分析的数据
-| 指标 | 说明 |
-|---|---|
-| **缓存数序列** `cached_numbers=[n1,...]` | 每步（启动第 i 个 app 后）仍缓存的 app 数 |
-| 最终缓存数 / 峰值缓存数 | 序列末值 / max |
-| 每 app RSS / Java heap / Native heap | dumpsys meminfo 解析 |
-| 系统总内存 / 可用内存 | dumpsys meminfo |
-| lmkd 触发次数（若可得） | logcat 或 dropbox |
-
-**可视化**：缓存数随启动数的折线图（复刻 Fleet Fig 11c），按 run 多线对比
-
-### ④ 报告列
-`启动第N个app | 当前缓存数 | [基线缓存数] | [差值]`；末尾汇总：峰值缓存数对比
-
-### CLI
-```bash
-python -m apb capture --type cache --app-list "com.android.chrome,com.twitter.android,com.facebook.katana" --use-duration 30 --run baseline
-```
+> **`cache` 已合并进 `keepalive`**（见下方测试项 4）。`--type cache` 现在是 keepalive 的轻量预设：
+> 单轮 + scroll 模式（前台滚动而非等待）+ 每步采 per-app PSS。
+>
+> 原 cache 测的"缓存数序列"= keepalive 的 `alive_count` 时序；"峰值缓存数"= keepalive 的 `alive_max`。
+>
+> ```bash
+> # 原 cache 行为 = 现在：
+> python -m apb capture --type cache --app-list "p1,p2,p3" --use-duration 30 --run baseline
+> # 等价于 keepalive 单轮 scroll：
+> python -m apb capture --type keepalive --ka-workload scroll --ka-rounds 1 --app-list "p1,p2,p3" --run baseline
+> ```
 
 ---
 
@@ -177,6 +155,8 @@ python -m apb capture --type cpu --app com.android.chrome --scroll-duration 30 -
 
 整个单轮流程重复 `camera_repeat` 轮，**轮间不清后台**（压力累积，同论文 "without killing background"）。
 
+**内存×app 数提示**：默认用论文 23-app 列表（取已装交集）。大内存设备（12G/16G）若已装 app 数低于 `recommended_app_count`（见 keepalive 测试项的对照表），benchmark 会提示用 `--app-list` 指定更多 app 充分加压——加压不足时相机制造的峰值压力不够，测不出系统在极限下的 keep-alive 差异。
+
 **说明**：app 启动用 `resolve-activity` 解析真实 launcher activity + u2 `app_start` 兜底确保到前台（荣耀等 ROM 仅 `am start` 可能不切前台）。若 app 被其他保活 app 抢前台，跳过手势只等待——内存压力主要靠进程启动产生，不依赖手势。
 
 ### ③ 分析的数据（论文 A.1 的 5 个指标）
@@ -212,18 +192,31 @@ python -m apb capture --type camera \
 ## 测试项：保活压力测试 (keepalive)
 
 ### ① 测试内容
-50 个 app 启动 N 轮，每个 app 前台运行 → 进后台 → 等待 → 启动下一个。每步密集采样系统资源和存活 app 数，观察系统在大量 app 保活压力下的内存管理能力——哪些 app 被回收、回收压力（vmstat）、内存水位（meminfo）、各进程 PSS（dumpsys meminfo -S）。
+N 个 app 启动多轮，每个 app 前台运行 → 进后台 → 等待 → 启动下一个。每步密集采样系统资源和存活 app 数，观察系统在大量 app 保活压力下的内存管理能力——哪些 app 被回收、回收压力（vmstat）、内存水位（meminfo）、各进程 PSS（dumpsys meminfo -S）。
+
+**加压 app 数按设备内存自动推荐**（setup 探测 MemTotal，大内存设备需更多 app 才能压满制造真实压力）：
+
+| 设备内存 | 推荐加压 app 数 |
+|---|---|
+| 4 GB | 8 |
+| 6 GB | 12 |
+| 8 GB | 18 |
+| 12 GB | 30 |
+| 16 GB | 35 |
+
+经验值：每 app 保活约占 200-400MB（后台 RSS + 缓存），系统保留 3-4GB 给 kernel/system，剩余决定能压多少。候选池 68 个国内常见 app，跑时取设备已装交集；已装不足推荐数时 setup 会提示安装（见 DEPENDENCIES.md）。
 
 ### ② 预制环境
 | 参数 | 默认 | 说明 |
 |---|---|---|
-| `--app-list` | 候选池取设备已装交集（≤50） | 逗号分隔包名；不传则用 KEEPALIVE_APP_POOL + 第一方槽位 |
-| `--ka-target-count` | 50 | 目标 app 数（从已装交集取前 N 个） |
+| `--app-list` | 候选池取设备已装交集（68 个候选） | 逗号分隔包名；不传则用 KEEPALIVE_APP_POOL + 第一方槽位 |
+| `--ka-target-count` | **按内存推荐**（见上表） | 目标 app 数（从已装交集取前 N 个）；显式指定则覆盖推荐 |
 | `--ka-foreground` | 30 | 每 app 前台秒数 |
 | `--ka-background-wait` | 10 | 进后台后等待秒数（再启动下一个） |
 | `--ka-rounds` | 1 | 重复轮数 |
+| `--ka-workload` | idle | idle(前台等待) / scroll(前台滚动,原 cache 行为) |
 
-**单 app 流程**：启动 → 前台 `ka-foreground` 秒 → press home 进桌面 → **采样** → 等 `ka-background-wait` 秒 → **采样** → 下一个 app。
+**单 app 流程**：启动 → 前台 `ka-foreground` 秒（idle 等待或 scroll 滚动）→ press home 进桌面 → **采样** → 等 `ka-background-wait` 秒 → **采样** → 下一个 app。
 
 ### ③ 分析的数据（每步 3 个采样点）
 | 指标 | 来源 | 采样点 |
@@ -241,7 +234,7 @@ python -m apb capture --type camera \
 
 ### CLI
 ```bash
-# 默认：候选池取设备已装 app（最多 50 个），前台 30s + 后台 10s，1 轮
+# 默认：候选池取设备已装 app（按内存推荐数，16G→35/12G→30/8G→18），前台 30s + 后台 10s，1 轮
 python -m apb capture --type keepalive --run baseline
 
 # 自定义：指定 8 个 app，前台 20s，后台 5s，跑 3 轮
