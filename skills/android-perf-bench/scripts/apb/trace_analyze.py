@@ -1,6 +1,6 @@
 """阶段 2 — 解析 trace，计算指标。
 
-用 subprocess 调 trace_processor_shell 跑 SQL（输出 JSON），再用 metrics.py 计算。
+用 perfetto python 库（TraceProcessor API）跑 SQL，再用 metrics.py 计算。
 结果写到 out/results/<run>.json。
 """
 from __future__ import annotations
@@ -8,111 +8,45 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import subprocess
 import sys
-import tempfile
 from pathlib import Path
 from typing import Optional
 
 from . import config, metrics, setup_env
 
 
-# ── trace_processor_shell 调用 ─────────────────────────────────────
-def _tps_path(env: dict) -> str:
-    p = env.get("trace_processor_shell") or ""
-    if not p:
-        # 兜底：现找
-        import shutil
-        p = shutil.which("trace_processor_shell") or shutil.which("trace_processor_shell.exe") or ""
-    if not p:
-        raise RuntimeError("trace_processor_shell 未找到，请先运行: python -m apb setup")
-    return p
+# ── perfetto TraceProcessor（python 库）─────────────────────────────
+_tp_cache: dict[str, object] = {}  # trace_path → TraceProcessor 实例（同一 trace 复用）
+
+
+def _get_tp(trace_path: str, env: dict):
+    """获取/复用 TraceProcessor 实例。用 bin_path 指定本地 trace_processor_shell，避免自动下载。"""
+    if trace_path in _tp_cache:
+        return _tp_cache[trace_path]
+    from perfetto.trace_processor import TraceProcessor, TraceProcessorConfig
+    bin_path = env.get("trace_processor_shell") or ""
+    cfg = TraceProcessorConfig(bin_path=bin_path) if bin_path else TraceProcessorConfig()
+    tp = TraceProcessor(trace=trace_path, config=cfg)
+    _tp_cache[trace_path] = tp
+    return tp
 
 
 def query_sql(trace_path: str, sql: str, env: dict, timeout: int = 180,
               quiet: bool = False) -> list[dict]:
-    """调 trace_processor_shell 跑一条 SQL，返回行列表（每行 dict）。
+    """用 perfetto TraceProcessor 跑 SQL，返回行列表（每行 dict，列名→值）。
 
-    用临时文件传 SQL（避免 shell 转义问题），读默认 CSV 输出并解析。
-    quiet=True 时不打印错误（用于可选的补充查询）。
+    同一 trace 复用 tp 实例（性能）。失败返回空列表。
     """
-    tps = _tps_path(env)
-    # SQL 写到 Windows 可读路径（不用 /tmp，避免 MSYS 路径问题）
-    import os
-    sql_file = os.path.join(tempfile.gettempdir(), "apb_query.sql")
-    with open(sql_file, "w", encoding="utf-8") as f:
-        f.write(sql)
-    cmd_env = dict(os.environ, MSYS_NO_PATHCONV="1", MSYS2_ARG_CONV_EXCL="*")
     try:
-        p = subprocess.run([tps, "query", "-f", sql_file, trace_path],
-                           capture_output=True, text=True, timeout=timeout, env=cmd_env)
-    finally:
-        try:
-            Path(sql_file).unlink(missing_ok=True)
-        except OSError:
-            pass
-
-    if p.returncode != 0:
-        if not quiet:
-            print(f"[analyze] trace_processor_shell 失败 (rc={p.returncode}): {p.stderr[:300]}")
-        return []
-    return _parse_tps_csv(p.stdout)
-
-
-def run_metric(trace_path: str, metric: str, env: dict, timeout: int = 180) -> dict:
-    """跑一个 android_* metric，返回解析后的 JSON dict。best-effort。"""
-    tps = _tps_path(env)
-    cmd = [tps, "--run-metrics", metric, "--metrics-output=json", trace_path]
-    try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        tp = _get_tp(trace_path, env)
+        df = tp.query(sql).as_pandas_dataframe()
+        # 转 list[dict]，NaN→None
+        return [{k: (None if (v != v) else v) for k, v in row.items()}
+                for row in df.to_dict("records")]
     except Exception as e:
-        print(f"[analyze] metric {metric} 异常: {e}")
-        return {}
-    if p.returncode != 0:
-        print(f"[analyze] metric {metric} 失败: {p.stderr[:200]}")
-        return {}
-    try:
-        return json.loads(p.stdout)
-    except json.JSONDecodeError:
-        return {}
-
-
-def _parse_tps_csv(stdout: str) -> list[dict]:
-    """解析 trace_processor_shell query 的默认 CSV 输出。
-
-    格式：
-        column 0 = <h0>          ← 表头声明行（可多行）
-        column 1 = <h1>
-        "<h0>","<h1>"            ← CSV 表头行
-        "v00","v01"              ← 数据行
-        [xxx] query.cc:...        ← 日志行（以 [ 开头）跳过
-    """
-    if not stdout.strip():
+        if not quiet:
+            print(f"[analyze] query 失败: {str(e)[:300]}")
         return []
-    import csv as _csv
-    import io
-    # 只保留非日志、非 "column N =" 声明的行
-    lines = []
-    for ln in stdout.splitlines():
-        s = ln.strip()
-        if not s:
-            continue
-        if s.startswith("["):           # 日志
-            continue
-        if s.startswith("column "):     # 表头声明
-            continue
-        lines.append(ln)
-    if not lines:
-        return []
-    reader = _csv.reader(io.StringIO("\n".join(lines)))
-    rows = list(reader)
-    if len(rows) < 2:
-        return []
-    headers = rows[0]
-    result = []
-    for r in rows[1:]:
-        result.append({headers[i]: (r[i] if i < len(r) else None) for i in range(len(headers))})
-    return result
 
 
 # ── 各实验的 SQL（来自 references/perfetto-queries.md）─────────────
@@ -136,6 +70,16 @@ SQL_DIRECT_RECLAIM = """
 SELECT count(*) AS direct_reclaim_count
 FROM counters
 WHERE name = 'vmscan/direct_reclaim_begin';
+"""
+
+# 相机进程在 trace 里的最早 slice ts（近似 apk 启动时刻，作为 first buffer 起点）
+SQL_PROCESS_FIRST_TS = """
+SELECT min(ts) AS ts
+FROM slice
+JOIN thread_track ON slice.track_id = thread_track.id
+JOIN thread USING(utid)
+JOIN process USING(upid)
+WHERE process.name = '{pkg}';
 """
 
 SQL_CPU = """
@@ -214,19 +158,38 @@ def analyze_cpu_trace(trace_path: str, pkg: str, n_apps: int, env: dict) -> dict
     return {"app": pkg, **metrics.cpu_breakdown(rows, pkg, n_apps)}
 
 
-def analyze_camera_trace(trace_path: str, env: dict) -> dict:
-    """从相机阶段的 trace 补充 direct reclaim 计数（论文 A.1 指标 2）。
+def analyze_camera_trace(trace_path: str, env: dict, camera_pkg: str = "") -> dict:
+    """从相机阶段的 trace 提取：direct reclaim + 相机 first full buffer。
 
-    多数指标（相机启动延迟、存活数、MemAvailable）已在 capture 阶段从 am/dumpsys/meminfo 算好，
-    trace 仅补充内核侧的 direct reclaim 次数（需开启 vmscan ftrace 事件；user 版可能无此事件→0）。
+    多数指标（am 测的启动延迟、存活数、MemAvailable）已在 capture 阶段算好，
+    trace 补充：
+      - direct reclaim 次数（vmscan ftrace，论文 A.1 指标）
+      - 相机 first full buffer（apk 启动 → SurfaceFlinger 收到相机预览首帧）
     """
     out = {}
+    # direct reclaim
     try:
         rows = query_sql(trace_path, SQL_DIRECT_RECLAIM, env, quiet=True)
         if rows:
             out["direct_reclaim_count"] = int(rows[0].get("direct_reclaim_count") or 0)
     except Exception:
         pass
+
+    # 相机 first full buffer：需 camera_pkg 定位启动起点 + FrameTimeline 找首帧
+    if camera_pkg:
+        try:
+            # 起点：相机进程在 trace 里的第一个 slice ts（近似 apk 启动时刻）
+            launch_rows = query_sql(trace_path,
+                SQL_PROCESS_FIRST_TS.format(pkg=camera_pkg), env, quiet=True)
+            launch_ts = int(launch_rows[0]["ts"]) if launch_rows and launch_rows[0].get("ts") else 0
+            if launch_ts:
+                ft_rows = query_sql(trace_path, SQL_FRAMETIMELINE, env, quiet=True)
+                fb = metrics.camera_first_buffer(ft_rows, camera_pkg, launch_ts)
+                if fb.get("found"):
+                    out["first_full_buffer_ms"] = fb["first_buffer_ms"]
+                    out["first_full_buffer_layer"] = fb["layer_name"]
+        except Exception as e:
+            out["first_buffer_error"] = str(e)[:200]
     return out
 
 
@@ -264,15 +227,16 @@ def analyze_run(run_name: str, env: dict) -> dict:
             item.setdefault("analysis",
                             metrics.cache_summary(item.get("cached_numbers", [])))
     elif bench_type == "camera":
-        # camera 主要指标在 capture 阶段已算好（存在 item 各字段）；trace 补充 direct reclaim
+        # camera 主要指标在 capture 阶段已算好；trace 补充 direct reclaim + first full buffer
         for item in result["items"]:
             analysis = {k: v for k, v in item.items()
                         if k in ("mem_stats", "pre_camera", "camera_results",
                                  "camera_launch_ms_mean", "survived_after_camera_mean",
                                  "memavailable_min_kb", "launch_times")}
             tr = item.get("trace")
+            cam_pkg = item.get("camera_pkg", "")
             if tr and Path(tr).exists():
-                analysis.update(analyze_camera_trace(tr, env))
+                analysis.update(analyze_camera_trace(tr, env, cam_pkg))
             item["analysis"] = analysis
     elif bench_type == "keepalive":
         # keepalive 指标在 capture 阶段已算好（samples + launch_records + mem/alive 统计）

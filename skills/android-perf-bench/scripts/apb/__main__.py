@@ -55,6 +55,7 @@ def main(argv: list[str] | None = None) -> int:
     p_cap.add_argument("--ka-background-wait", type=int, default=None, help="keepalive 进后台后等待秒数（默认10）")
     p_cap.add_argument("--ka-rounds", type=int, default=None, help="keepalive 重复轮数（默认1）")
     p_cap.add_argument("--ka-target-count", type=int, default=None, help="keepalive 目标 app 数（默认50，取设备已装交集）")
+    p_cap.add_argument("--ka-workload", default="idle", choices=["idle", "scroll"], help="keepalive 前台负载：idle(等待) / scroll(滚动,原cache行为)")
     # 通用
     p_cap.add_argument("--background-apps", type=int, default=0, help="后台预跑 N 个 app 制造内存压力")
     p_cap.add_argument("--launch-method", default="auto", choices=["auto", "adb", "click"],
@@ -94,6 +95,7 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument("--ka-background-wait", type=int, default=None)
     p_run.add_argument("--ka-rounds", type=int, default=None)
     p_run.add_argument("--ka-target-count", type=int, default=None)
+    p_run.add_argument("--ka-workload", default="idle", choices=["idle", "scroll"])
     p_run.add_argument("--serial", default=None)
 
     args = parser.parse_args(argv)

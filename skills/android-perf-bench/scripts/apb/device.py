@@ -313,6 +313,9 @@ class Device:
             time.sleep(1.0)
             return True
         return False
+
+    def app_wait(self, pkg: str, front: bool = True, timeout: float = 15.0) -> int:
+        """等待 app 运行/到前台，返回 pid 或 0。"""
         try:
             return self.u2().app_wait(pkg, front=front, timeout=timeout)
         except Exception:

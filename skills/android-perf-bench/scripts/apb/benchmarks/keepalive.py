@@ -39,6 +39,16 @@ def _sample(dev: Device, app_list: list[str], phase: str, app: str,
         sample["alive_apps"] = sorted(alive)
     except Exception:
         pass
+    # 每 app 的 PSS（dumpsys meminfo -S，原 cache_mem 的 per-app 内存）
+    try:
+        procs = dev.sample_dumpsys_meminfo_s()
+        # 过滤出 app_list 中的进程
+        target_set = set(app_list)
+        sample["app_pss"] = {p["package"]: p["pss_kb"]
+                             for p in procs if p["package"] in target_set}
+    except Exception:
+        sample["app_pss"] = {}
+        pass
     return sample
 
 
@@ -48,6 +58,11 @@ def run(dev: Device, args, env: dict, app_list: list[str]) -> list[dict]:
     rounds = getattr(args, "ka_rounds", None) or config.DEFAULT_KA_ROUNDS
     target = getattr(args, "ka_target_count", None) or config.DEFAULT_KA_TARGET_COUNT
     launch_method = getattr(args, "launch_method", "auto")
+    workload = getattr(args, "ka_workload", "idle")  # idle|scroll（scroll=原 cache 行为）
+    # cache 预设：--type cache 时走轻量单轮滚动模式
+    if getattr(args, "_cache_preset", False):
+        workload = "scroll"
+        rounds = 1
 
     # 构建 app 列表：优先 --app-list，否则用候选池取设备已装交集
     if args.app_list:
@@ -59,11 +74,10 @@ def run(dev: Device, args, env: dict, app_list: list[str]) -> list[dict]:
             if line.startswith("package:"):
                 installed.add(line.split(":", 1)[1].strip())
         # 候选池 + 第一方槽位（按品牌）
-        from .. import config as cfg
-        pool = list(cfg.KEEPALIVE_APP_POOL)
+        pool = list(config.KEEPALIVE_APP_POOL)
         brand = env.get("brand", "")
         for slot in ("camera", "health", "appmarket", "weather", "contacts", "mms"):
-            pool.extend(cfg.first_party_candidates(slot, brand))
+            pool.extend(config.first_party_candidates(slot, brand))
         # 去重保序
         seen = set()
         unique_pool = []
@@ -107,8 +121,14 @@ def run(dev: Device, args, env: dict, app_list: list[str]) -> list[dict]:
                 "launch_method": lr.get("method_used"),
                 "on_front": lr.get("on_front"),
             })
-            # 前台运行
-            time.sleep(foreground)
+            # 前台运行（workload=idle 纯等待；scroll 模拟用户滚动，原 cache 行为）
+            if workload == "scroll":
+                end_fg = time.time() + foreground
+                while time.time() < end_fg:
+                    dev.swipe_up(scale=0.7)
+                    time.sleep(0.8)
+            else:
+                time.sleep(foreground)
 
             # press home 进桌面
             dev.home()
@@ -135,7 +155,8 @@ def run(dev: Device, args, env: dict, app_list: list[str]) -> list[dict]:
         "app_list": target_apps,
         "rounds": rounds,
         "params": {"foreground_s": foreground, "background_wait_s": bg_wait,
-                   "target_count": target, "actual_count": len(target_apps)},
+                   "target_count": target, "actual_count": len(target_apps),
+                   "workload": workload, "rounds": rounds},
         "samples": samples,
         "launch_records": launch_records,
         "mem_stats": {

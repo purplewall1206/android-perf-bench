@@ -24,32 +24,29 @@ from .device import Device
 def _render_config(duration_ms: int, app_pkg: str, env: dict,
                    include_frametimeline: bool = True,
                    include_sched: bool = True) -> str:
-    """渲染 templates/perfetto-config.textproto。
+    """渲染 templates/perfetto-config.textproto（全面数据源 + 三 buffer）。
 
     数据源名严格按 https://perfetto.dev/docs/data-sources/frametimeline ：
       android.surfaceflinger.frametimeline（注意无 s）
-    buffer 用默认 RING_BUFFER（不丢数据）。
+    三 buffer：[0] ftrace / [1] process_stats+packages+log / [2] FrameTimeline。
     """
     tmpl = (config.TEMPLATES_DIR / "perfetto-config.textproto").read_text(encoding="utf-8")
-    # FrameTimeline 块（Android 12+，user 版可用），单独用 buffer 1 避免被 sched 挤掉
+    # FrameTimeline 块（Android 12+，user 版可用），用 buffer 2 独立空间
     if include_frametimeline and env.get("frame_timeline_supported"):
         ft_block = """data_sources {
   config {
     name: "android.surfaceflinger.frametimeline"
-    target_buffer: 1
+    target_buffer: 2
   }
 }"""
     else:
         ft_block = "# FrameTimeline: 不支持（需 Android 12+）"
-    # sched 内核事件（条件化）
-    sched_events = ('      ftrace_events: "sched/sched_switch"\n'
-                    '      ftrace_events: "sched/sched_waking"\n') if include_sched else ""
-    atrace_sched = '      atrace_categories: "sched"\n' if include_sched else ""
+    # atrace sched 已在模板固定行，include_sched=False 时留空（sched 事件仍在）
+    atrace_sched = ""
     return (tmpl
             .replace("{{DURATION_MS}}", str(duration_ms))
             .replace("{{BUFFER_KB}}", str(config.DEFAULT_BUFFER_KB))
             .replace("{{APP_PKG}}", app_pkg)
-            .replace("{{SCHED_EVENTS}}", sched_events)
             .replace("{{ATRACE_SCHED}}", atrace_sched)
             .replace("{{FRAMETIMELINE_BLOCK}}", ft_block))
 
@@ -149,7 +146,7 @@ def main(args: argparse.Namespace) -> int:
                 else list(config.DEFAULT_APP_LIST))
 
     # 分派
-    from .benchmarks import startup, jank_fps, cache_mem, camera_reload, keepalive
+    from .benchmarks import startup, jank_fps, camera_reload, keepalive
     raw = None
     if args.type in ("startup", "all"):
         raw = startup.run(dev, args, env, app_list)
@@ -159,14 +156,16 @@ def main(args: argparse.Namespace) -> int:
         raw = jank_fps.run(dev, args, env, app_list)
         if args.type == "all" and raw:
             _save_raw(args.run + "_jank", "jank", raw, env)
-    if args.type in ("cache", "all"):
-        raw = cache_mem.run(dev, args, env, app_list)
-        if args.type == "all" and raw:
-            _save_raw(args.run + "_cache", "cache", raw, env)
     if args.type in ("camera", "all"):
         raw = camera_reload.run(dev, args, env, app_list)
         if args.type == "all" and raw:
             _save_raw(args.run + "_camera", "camera", raw, env)
+    if args.type in ("cache", "all"):
+        # cache 已并入 keepalive（作为轻量预设：单轮 + scroll 模式 + per-app PSS）
+        setattr(args, "_cache_preset", True)
+        raw = keepalive.run(dev, args, env, app_list)
+        if args.type == "all" and raw:
+            _save_raw(args.run + "_cache", "keepalive", raw, env)
     if args.type in ("keepalive", "all"):
         raw = keepalive.run(dev, args, env, app_list)
         if args.type == "all" and raw:
@@ -175,10 +174,12 @@ def main(args: argparse.Namespace) -> int:
         raw = jank_fps.run(dev, args, env, app_list, force_cpu=True)
 
     # 单类型（非 all）落盘 + 可选 analyze
+    # 注：cache 已并入 keepalive，落盘/分析用 keepalive 类型
     if args.type in ("startup", "jank", "cache", "cpu", "camera", "keepalive") and raw:
         suffix = {"jank": "", "cpu": "_cpu", "cache": "_cache",
                   "startup": "", "camera": "_camera", "keepalive": "_keepalive"}[args.type]
-        _save_raw(args.run + suffix, args.type, raw, env)
+        bench_type = "keepalive" if args.type == "cache" else args.type
+        _save_raw(args.run + suffix, bench_type, raw, env)
 
     if not args.no_analyze and raw and args.type != "all":
         from . import trace_analyze

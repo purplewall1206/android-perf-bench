@@ -107,6 +107,59 @@ def jank_fps_from_frametimeline(rows: list[dict], target_pkg: str) -> dict:
     }
 
 
+# ── 相机启动：apk → first full buffer ─────────────────────────────
+# 相机启动不同于通用 app（需硬件返帧）。测量点：
+#   起点：相机 apk 启动（am start 触发的 intent received）
+#   终点：first full buffer —— SurfaceFlinger 收到相机预览的第一个完整 buffer
+# 在 FrameTimeline 里，相机预览的 layer_name 通常含相机包名（如 com.hihonor.camera）。
+# 注意：不能用 "SurfaceView" 作关键字——普通 app 也用 SurfaceView（游戏/视频），
+# 会误匹配到前一个 app 的 layer。只匹配相机包名 + 相机特有的 layer 标识。
+CAMERA_LAYER_KEYWORDS = ("camera", "Camera")
+
+
+def camera_first_buffer(frametimeline_rows: list[dict], camera_pkg: str,
+                        launch_ts_ns: int) -> dict:
+    """从 FrameTimeline 找相机启动后的第一个 full buffer 帧。
+
+    frametimeline_rows: actual_frame_timeline_slice 查询结果（含 ts/layer_name/jank_type）。
+    camera_pkg: 相机包名（用于过滤 layer_name，如 com.hihonor.camera）。
+    launch_ts_ns: 相机启动起点的 ts（ns），first buffer 必须 > 此值。
+    返回 {first_buffer_ts_ns, first_buffer_ms, found, layer_name}。
+    first_buffer_ms = (first_buffer_ts - launch_ts) / 1e6。
+    """
+    # 过滤相机相关 layer（包名匹配 或 SurfaceView 关键字）
+    def _is_camera_layer(name: str) -> bool:
+        name = name or ""
+        if camera_pkg and camera_pkg in name:
+            return True
+        return any(kw.lower() in name.lower() for kw in CAMERA_LAYER_KEYWORDS)
+
+    candidates = []
+    for r in frametimeline_rows:
+        ts = r.get("ts")
+        layer = r.get("layer_name") or ""
+        if ts is None:
+            continue
+        try:
+            ts_int = int(ts)
+        except (TypeError, ValueError):
+            continue
+        if ts_int <= launch_ts_ns:
+            continue
+        if _is_camera_layer(layer):
+            candidates.append((ts_int, layer))
+    if not candidates:
+        return {"found": False, "reason": "no camera layer frames after launch"}
+    candidates.sort(key=lambda x: x[0])
+    first_ts, first_layer = candidates[0]
+    return {
+        "found": True,
+        "first_buffer_ts_ns": first_ts,
+        "first_buffer_ms": round((first_ts - launch_ts_ns) / 1e6, 1),
+        "layer_name": first_layer,
+    }
+
+
 # ── 启动时间 ─────────────────────────────────────────────────────
 def startup_from_am(am_result: dict) -> dict:
     """从 am start -W 解析结果抽取。"""

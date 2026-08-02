@@ -1,25 +1,28 @@
-# Perfetto trace 配置模板（textproto）。
+# Perfetto trace 配置模板（全面数据源）。
 # 由 trace_capture.py 的 _render_config 参数化填充。
 # 用法：adb shell perfetto -c <此文件> --txt -o <out> --background
 #
-# 字段参考 https://perfetto.dev/docs/reference/trace-config-proto
-# 关键点：
-#   - 两个 buffer：[0] 给 ftrace(sched 海量事件，RING)，[1] 给 FrameTimeline + process_stats(不被覆盖)
-#   - 数据源名 android.surfaceflinger.frametimeline（注意无 s），Android 12+，user 版可用
-#   - atrace_apps 抓 app 标签（如 Choreographer#doFrame），非 debuggable app 需 root
+# 设计原则（参考 https://perfetto.dev/docs/reference/trace-config-proto）：
+#   - 三 buffer 防覆盖：[0] ftrace(sched 海量) / [1] process_stats+packages+log / [2] FrameTimeline
+#   - 数据源尽量全面：sched + 内存回收 + atrace(含 camera/video) + 帧时间线 + 进程 + 日志
+#   - Android 12+ user 版可用（配置放 /data/misc/perfetto-configs/）
 
 duration_ms: {{DURATION_MS}}
 
-# buffer 0: ftrace（sched_switch 海量，RING 覆盖旧数据）
+# buffer 0: ftrace（sched_switch 海量事件，RING 覆盖旧数据）
 buffers {
   size_kb: {{BUFFER_KB}}
 }
-# buffer 1: FrameTimeline + process_stats（小数据，RING 但单独空间不被 sched 挤掉）
+# buffer 1: process_stats / packages_list / log（中等数据量）
+buffers {
+  size_kb: 32768
+}
+# buffer 2: FrameTimeline（小数据，独立空间不被挤掉）
 buffers {
   size_kb: 32768
 }
 
-# ftrace: 内核事件 + atrace 类别 + 目标 app → buffer 0
+# ── ftrace：内核事件 + 全 atrace 类别（含 camera/video）→ buffer 0 ──
 data_sources {
   config {
     name: "linux.ftrace"
@@ -27,20 +30,43 @@ data_sources {
     ftrace_config {
       buffer_size_kb: 32768
       drain_period_ms: 1000
-      {{SCHED_EVENTS}}
+      # 内核调度与频率
+      ftrace_events: "sched/sched_switch"
+      ftrace_events: "sched/sched_waking"
+      ftrace_events: "sched/sched_wakeup_new"
+      ftrace_events: "sched/sched_blocked_reason"
+      ftrace_events: "power/cpu_frequency"
+      ftrace_events: "power/suspend_resume"
+      # 内存回收压力（direct reclaim / compaction / OOM）
+      ftrace_events: "vmscan/mm_vmscan_direct_reclaim_begin"
+      ftrace_events: "vmscan/mm_vmscan_direct_reclaim_end"
+      ftrace_events: "vmscan/mm_vmscan_kswapd_sleep"
+      ftrace_events: "vmscan/mm_vmscan_kswapd_wake"
+      ftrace_events: "compaction/mm_compaction_begin"
+      ftrace_events: "compaction/mm_compaction_end"
+      # binder（IPC 延迟诊断）
+      ftrace_events: "binder/binder_transaction"
+      # atrace 全类别（gfx/view/am/wm 应用层 + camera/video 硬件层）
+      atrace_categories: "sched"
       atrace_categories: "gfx"
       atrace_categories: "view"
       atrace_categories: "am"
       atrace_categories: "wm"
       atrace_categories: "ss"
       atrace_categories: "input"
+      atrace_categories: "audio"
+      atrace_categories: "video"
+      atrace_categories: "camera"
+      atrace_categories: "res"
+      atrace_categories: "dalvik"
+      atrace_categories: "bionic"
       {{ATRACE_SCHED}}
       atrace_apps: "{{APP_PKG}}"
     }
   }
 }
 
-# 进程/线程信息 → buffer 1
+# ── 进程统计（周期采样 /proc/pid/status）→ buffer 1 ──
 data_sources {
   config {
     name: "linux.process_stats"
@@ -48,9 +74,27 @@ data_sources {
     process_stats_config {
       scan_all_processes_on_start: true
       record_thread_names: true
+      proc_stats_poll_ms: 5000
     }
   }
 }
 
-# FrameTimeline（jank_type 分解，Android 12+，user 版可用，无需 root）→ buffer 1
+# ── 包列表（进程↔包名映射）→ buffer 1 ──
+data_sources {
+  config {
+    name: "android.packages_list"
+    target_buffer: 1
+  }
+}
+
+# ── 系统日志（logcat，lmkd/OOM/相机错误）→ buffer 1 ──
+# 不指定 log_ids/min_prio（用默认，避免不同 perfetto 版本的 enum 兼容问题）
+data_sources {
+  config {
+    name: "android.log"
+    target_buffer: 1
+  }
+}
+
+# ── FrameTimeline（jank + 相机 first buffer，Android 12+）→ buffer 2 ──
 {{FRAMETIMELINE_BLOCK}}
