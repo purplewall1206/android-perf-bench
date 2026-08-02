@@ -89,6 +89,11 @@ def run(dev: Device, args, env: dict, app_list: list[str]) -> list[dict]:
             target_apps = [a for a in app_list if a in installed][:8]
 
     camera_pkg = _detect_camera(dev, env)
+    # 内存提示：大内存设备若 app 数偏少，提示可加更多 app 加压
+    mem_gb = env.get("memtotal_gb")
+    if mem_gb and not args.app_list and len(target_apps) < config.recommended_app_count(env.get("memtotal_kb")):
+        print(f"[camera_reload] 提示：设备 {mem_gb}GB，当前仅 {len(target_apps)} 个加压 app，"
+              f"建议 --app-list 指定更多 app（推荐 {config.recommended_app_count(env.get('memtotal_kb'))} 个）以充分加压")
     # camera_repeat 语义：完整加压流程（N app → 相机×1）重复的轮数（论文 500 轮）
     rounds = camera_repeat
     # 估算单轮时长用于 perfetto duration（N app × use_duration + 相机 ~6s + 余量）

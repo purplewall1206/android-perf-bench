@@ -26,6 +26,12 @@ def run(dev: Device, args, env: dict, app_list: list[str]) -> list[dict]:
         print(f"\n[startup] {pkg} · {lt}启动 · 重复 {repeat} 次")
         if args.background_apps:
             warm_background_apps(dev, app_list, args.background_apps)
+        else:
+            # 未加压时提示：大内存设备建议加 background-apps 才能测出压力下表现
+            rec = config.recommended_app_count(env.get("memtotal_kb"))
+            if rec >= 18:
+                print(f"  ℹ 未加压（--background-apps=0）。设备 {env.get('memtotal_gb','?')}GB，"
+                      f"建议 --background-apps {min(rec, 10)} 测压力下启动表现")
 
         am_results = []
         for i in range(repeat):

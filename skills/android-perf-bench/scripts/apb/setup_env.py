@@ -105,6 +105,18 @@ def probe_device(serial: str) -> dict:
         sdk_int = 0
     frame_timeline = sdk_int >= 31
 
+    # 内存总量（决定加压 app 数推荐值）
+    memtotal_kb = None
+    rc, mt_out = _adb("shell", "cat", "/proc/meminfo", serial=serial, timeout=10)
+    if rc == 0:
+        for line in (mt_out or "").splitlines():
+            if line.startswith("MemTotal:"):
+                try:
+                    memtotal_kb = int(line.split()[1])
+                except (IndexError, ValueError):
+                    pass
+                break
+
     # 选择 trace 后端：
     #   - perfetto 可用 且 (root/userdebug 或 Android 12+) → perfetto（FrameTimeline 需它）
     #   - 否则 atrace 降级（无 FrameTimeline/jank_type 分解）
@@ -135,6 +147,8 @@ def probe_device(serial: str) -> dict:
         "atrace_has_gfx": has_atrace_gfx,
         "frame_timeline_supported": frame_timeline,
         "trace_backend": trace_backend,
+        "memtotal_kb": memtotal_kb,
+        "memtotal_gb": round(memtotal_kb / 1048576, 1) if memtotal_kb else None,
     }
     return info
 
@@ -411,6 +425,7 @@ def main(serial: Optional[str] = None,
     print(f"  perfetto    : {info['perfetto_path'] or '不可用'}")
     print(f"  atrace      : {info['atrace_path'] or '不可用'} (view:{info['atrace_has_view']}, gfx:{info['atrace_has_gfx']})")
     print(f"  FrameTimeline: {'支持' if info['frame_timeline_supported'] else '不支持 (需 Android 12+)'}")
+    print(f"  内存        : {info.get('memtotal_gb') or '?'} GB (MemTotal {info.get('memtotal_kb') or '?'} KB)")
     print(f"  Trace 后端  : {info['trace_backend']}")
     if info['trace_backend'] == 'atrace':
         print("  ⚠ 使用 atrace 降级：jank 将仅用 doFrame 阈值法，无 jank_type 分解")

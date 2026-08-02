@@ -56,7 +56,11 @@ def run(dev: Device, args, env: dict, app_list: list[str]) -> list[dict]:
     foreground = getattr(args, "ka_foreground", None) or config.DEFAULT_KA_FOREGROUND
     bg_wait = getattr(args, "ka_background_wait", None) or config.DEFAULT_KA_BACKGROUND_WAIT
     rounds = getattr(args, "ka_rounds", None) or config.DEFAULT_KA_ROUNDS
-    target = getattr(args, "ka_target_count", None) or config.DEFAULT_KA_TARGET_COUNT
+    target = getattr(args, "ka_target_count", None)
+    # 默认按设备内存推荐 app 数（16G→35, 12G→30, 8G→18...），可被 --ka-target-count 覆盖
+    if not target:
+        target = config.recommended_app_count(env.get("memtotal_kb"))
+        print(f"[keepalive] 设备 {env.get('memtotal_gb','?')}GB → 推荐加压 {target} 个 app")
     launch_method = getattr(args, "launch_method", "auto")
     workload = getattr(args, "ka_workload", "idle")  # idle|scroll（scroll=原 cache 行为）
     # cache 预设：--type cache 时走轻量单轮滚动模式

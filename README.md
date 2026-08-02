@@ -13,7 +13,7 @@
 | **① 启动速度** `startup` | 单 app 冷/热/温启动 | 可选 `--background-apps N` 后台预跑 | 1 app × `--repeat 10` | 每 app 10 次 | WaitTime/TTID/TTFD + CDF |
 | **② Jank** `jank` | 单 app 前台滚动帧率 | 可选 `--background-apps N` | 1 app × `--scroll-duration 30s` | 1 app × 30s | FPS + jank ratio + jank_type 分解 |
 | **③ 相机重载** `camera` | 相机启动（最后启动） | N app 加压 → 最后相机 | N app × `--camera-repeat 3` 轮 | N app × 3 轮 | 相机启动延迟(apk→first buffer) + 相机后存活数 + MemAvailable |
-| **④ 保活模型** `keepalive` | 系统保活能力 | N app 连续启动本身即加压 | N app(≤50) × `--ka-rounds 1`，每 app 前台30s+后台10s | N app × 1~3 轮 | 存活数曲线 + MemAvailable/vmstat/dumpsys 时序 + 每 app PSS |
+| **④ 保活模型** `keepalive` | 系统保活能力 | N app 连续启动本身即加压 | **按内存推荐**(16G→35/12G→30/8G→18) × `--ka-rounds 1`，每 app 前台30s+后台10s | N app × 1~3 轮 | 存活数曲线 + MemAvailable/vmstat/dumpsys 时序 + 每 app PSS |
 
 > `cache` 已并入 keepalive（`--type cache` = keepalive 单轮 scroll 预设）。`cpu` 可选。
 
@@ -113,12 +113,24 @@ python -m apb capture --type camera --app-list "p1,p2,p3" --camera-repeat 10 --r
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
-| `--app-list` | 候选池取已装（≤50） | 逗号分隔包名 |
-| `--ka-target-count N` | 50 | 目标 app 数 |
+| `--app-list` | 候选池取已装（68 个候选） | 逗号分隔包名 |
+| `--ka-target-count N` | **按内存推荐**（见下表） | 目标 app 数 |
 | `--ka-foreground S` | 30 | 每 app 前台秒数 |
 | `--ka-background-wait S` | 10 | 进后台后等待秒数 |
 | `--ka-rounds N` | 1 | 重复轮数 |
 | `--ka-workload` | idle | idle(等待) / scroll(滚动,原 cache) |
+
+**加压 app 数按设备内存自动推荐**（setup 探测 MemTotal，大内存设备需更多 app 才能压满）：
+
+| 设备内存 | 推荐加压 app 数 | 说明 |
+|---|---|---|
+| 4 GB | 8 | 低内存，少量 app 即可制造压力 |
+| 6 GB | 12 | |
+| 8 GB | 18 | |
+| 12 GB | 30 | 中高端，需 30+ app 才能压满 |
+| 16 GB | 35 | 旗舰，需充分加压才测得出保活差异 |
+
+`--ka-target-count` 可显式覆盖推荐值。候选池 68 个国内常见 app（社交/视频/电商/出行/资讯/办公），跑时取设备已装交集。若已装不足推荐数，setup 会提示安装更多（见 DEPENDENCIES.md）。
 
 **分析的指标**：存活 app 数曲线（峰值/均值）、MemAvailable 时序、vmstat（pgmajfault/pswpin/pswpout/pgscan/oom_kill）、每 app PSS（dumpsys meminfo -S）。每步 3 个采样点（启动前/进桌面后/等待后）。
 

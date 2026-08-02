@@ -259,34 +259,59 @@ DEFAULT_KA_ROUNDS = 1              # 重复轮数
 DEFAULT_KA_TARGET_COUNT = 50       # 目标 app 数（实际取设备已装交集）
 
 # keepalive 候选 app 池（国内常见，跑时取设备已装交集，凑到目标数量）
-# 含第三方 + 第一方，覆盖社交/视频/电商/工具/资讯等，制造充分的保活压力
+# 含第三方 + 第一方，覆盖社交/视频/电商/工具/资讯/办公/生活等，制造充分的保活压力
+# 大内存设备（12G/16G）需 30+ app 才能压满，故候选池保持在 55+。
 KEEPALIVE_APP_POOL = [
     # 社交/通讯
     "com.tencent.mm", "com.tencent.mobileqq", "com.ss.android.ugc.aweme",
     "com.xingin.xhs", "com.smile.gifmaker", "com.sina.weibo",
-    "com.zhihu.android", "com.linkedin.android",
-    # 视频/直播
+    "com.zhihu.android", "com.linkedin.android", "com.sohu.sohu",
+    "com.ss.android.lark", "com.tencent.wework",
+    # 视频/直播/音乐
     "tv.danmaku.bili", "com.tencent.qqlive", "com.ss.android.article.news",
     "com.kuaishou.lite", "com.netease.cloudmusic", "com.tencent.qqmusic",
-    "com.kugou.android", "com.duowan.kiwi",
+    "com.kugou.android", "com.duowan.kiwi", "com.hpplay.baby",
+    "com.eg.android.live", "com.cmcc.cmvideo",
     # 电商
     "com.taobao.taobao", "com.xunmeng.pinduoduo", "com.jingdong.app.mall",
     "com.eg.android.AlipayGphone", "com.achievo.vipshop", "com.suning.mobile.ebuy",
-    "com.tmall.wireless",
+    "com.tmall.wireless", "com.xunmeng.pinduoduo", "com.yhd.platform",
     # 本地/出行/地图
     "com.sankuai.meituan", "com.sdu.didi.psnger", "com.autonavi.minimap",
     "com.baidu.BaiduMap", "ctrip.android.view", "com.Qunar",
-    "com.taobao.trip",
-    # 资讯/阅读/工具
+    "com.taobao.trip", "com.ss.android.express",
+    # 资讯/阅读
     "com.baidu.searchbox", "com.dragon.read", "com.chaozh.iReaderFree",
     "com.ifeng.news2", "com.sohu.newsclient", "com.netease.news",
-    "com.baidu.tieba", "com.wondertek.paper",
-    # 浏览器/输入法/系统
+    "com.baidu.tieba", "com.wondertek.paper", "com.ss.android.article.video",
+    # 办公/工具/浏览器/输入法/系统
     "com.android.chrome", "com.mi.globalbrowser", "com.baidu.input_hihonor",
     "com.tencent.wetype", "com.android.settings", "com.android.contacts",
     "com.android.mms", "com.hihonor.android.totemweather",
+    "com.tencent.docs", "com.kingsoft.office.amznmobile",
     # 第一方（按品牌补充，setup 探测后动态加）
 ]
+
+
+def recommended_app_count(memtotal_kb: int | None) -> int:
+    """根据设备内存规格推荐加压 app 数（用于 keepalive/camera 的默认 target）。
+
+    经验值：每个 app 保活约占用 200-400MB（含后台 RSS + 缓存）。
+    系统保留约 3-4GB 给 kernel/system，剩余内存决定能压多少 app。
+    大内存设备（12G/16G）需 30+ app 才能真正压满制造内存压力。
+    """
+    if not memtotal_kb:
+        return 15  # 未知内存时的保守默认
+    mem_gb = memtotal_kb / 1048576  # KB → GB
+    if mem_gb >= 15:    # 16G 设备
+        return 35
+    if mem_gb >= 11:    # 12G 设备
+        return 30
+    if mem_gb >= 7:     # 8G 设备
+        return 18
+    if mem_gb >= 5:     # 6G 设备
+        return 12
+    return 8            # 4G 及以下
 
 
 def ensure_dirs() -> None:
