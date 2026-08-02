@@ -272,7 +272,7 @@ KEEPALIVE_APP_POOL = [
     # 电商
     "com.taobao.taobao", "com.xunmeng.pinduoduo", "com.jingdong.app.mall",
     "com.eg.android.AlipayGphone", "com.achievo.vipshop", "com.suning.mobile.ebuy",
-    "com.xunmeng.pinduoduo", "com.tmall.wireless",
+    "com.tmall.wireless",
     # 本地/出行/地图
     "com.sankuai.meituan", "com.sdu.didi.psnger", "com.autonavi.minimap",
     "com.baidu.BaiduMap", "ctrip.android.view", "com.Qunar",
