@@ -274,6 +274,13 @@ def analyze_run(run_name: str, env: dict) -> dict:
             if tr and Path(tr).exists():
                 analysis.update(analyze_camera_trace(tr, env))
             item["analysis"] = analysis
+    elif bench_type == "keepalive":
+        # keepalive 指标在 capture 阶段已算好（samples + launch_records + mem/alive 统计）
+        for item in result["items"]:
+            item["analysis"] = {k: v for k, v in item.items()
+                                if k in ("params", "samples", "launch_records",
+                                         "mem_stats", "alive_stats",
+                                         "memavailable_min_kb", "alive_max")}
 
     out_path = config.RESULT_DIR / f"{run_name}.json"
     out_path.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")

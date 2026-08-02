@@ -414,6 +414,71 @@ class Device:
                     pass
         return res
 
+    def sample_proc_meminfo(self) -> dict:
+        """采样 /proc/meminfo 的关键字段（KB）。轻量，每步可调。"""
+        rc, out = self.shell("cat", "/proc/meminfo", timeout=10)
+        res = {}
+        if rc != 0:
+            return res
+        keys = ("MemTotal", "MemFree", "MemAvailable", "Buffers", "Cached",
+                "SwapCached", "Active", "Inactive", "SwapTotal", "SwapFree",
+                "Dirty", "Writeback", "AnonPages", "Mapped", "Shmem",
+                "Slab", "SReclaimable", "SUnreclaim", "CmaTotal", "CmaFree")
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[0].rstrip(":") in keys:
+                try:
+                    res[parts[0].rstrip(":").lower() + "_kb"] = int(parts[1])
+                except ValueError:
+                    pass
+        return res
+
+    def sample_proc_vmstat(self) -> dict:
+        """采样 /proc/vmstat 的关键字段（内存回收/swap 活动）。"""
+        rc, out = self.shell("cat", "/proc/vmstat", timeout=10)
+        res = {}
+        if rc != 0:
+            return res
+        # 关注 reclaim/swap/compact 相关计数器
+        keys = ("pgmajfault", "pgpgin", "pgpgout", "pswpin", "pswpout",
+                "pgsteal_kswapd", "pgsteal_direct", "pgscan_kswapd",
+                "pgscan_direct", "pgrefill", "compact_stall",
+                "oom_kill", "pgalloc_normal", "pgalloc_dma32")
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[0] in keys:
+                try:
+                    res[parts[0]] = int(parts[1])
+                except ValueError:
+                    pass
+        return res
+
+    def sample_dumpsys_meminfo_s(self) -> list[dict]:
+        """dumpsys meminfo -S（summary 模式），返回每个进程的内存摘要。
+
+        输出形如：
+          PSS       Private    Private    Swap     Heap     Heap     Heap
+          TOTAL     RSS        Dirty      PSS      ...
+          123456    ...        com.example.app (pid-1234)
+        每行一个进程，含 PSS/RSS 等。
+        """
+        rc, out = self.shell("dumpsys", "meminfo", "-S", timeout=20)
+        procs = []
+        if rc != 0:
+            return procs
+        # -S 模式："  944,344K: com.ss.android.ugc.aweme (pid 25109 / activities)"
+        for line in out.splitlines():
+            line = line.strip()
+            # 匹配 "<PSS>K: <package> (pid ...)"
+            m = re.match(r"([\d,]+)K:\s+(\S+)\s*\(pid", line)
+            if m:
+                try:
+                    pss = int(m.group(1).replace(",", ""))
+                except ValueError:
+                    pss = 0
+                procs.append({"package": m.group(2), "pss_kb": pss, "raw": line})
+        return procs
+
     def parse_meminfo_app(self, pkg: str) -> dict:
         """解析单个 app 的 RSS / Java Heap / Native Heap。best-effort。"""
         out = self.dumpsys_meminfo(pkg)

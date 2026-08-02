@@ -123,6 +123,55 @@ def jank_table(runs: dict[str, dict], baseline: str) -> dict:
     return {"columns": columns, "rows": rows}
 
 
+def keepalive_table(runs: dict[str, dict], baseline: str) -> dict:
+    """keepalive 对比表：最低 MemAvailable / 峰值存活数 / 平均存活数。"""
+    run_names = list(runs.keys())
+    columns = ["指标"] + run_names
+    if len(run_names) > 1:
+        columns += [f"vs {baseline}"]
+
+    def _get(run_data: dict, *keys):
+        for item in run_data.get("items", []):
+            an = item.get("analysis") or item
+            for k in keys:
+                if k in an:
+                    return an[k]
+        return None
+
+    rows = []
+    pairs = [
+        ("最低 MemAvailable (MB)", "memavailable_min_kb", True),   # KB→MB
+        ("峰值存活 app 数", "alive_max", False),
+        ("平均存活 app 数", None, False),
+    ]
+    for label, key, to_mb in pairs:
+        row = {"指标": label}
+        base_val = None
+        for rn in run_names:
+            if key:
+                v = _get(runs[rn], key)
+                if to_mb and v:
+                    v = round(v / 1024, 1)
+            else:
+                st = _get(runs[rn], "alive_stats")
+                v = st.get("mean") if st else None
+            row[rn] = _fmt(v, places=1)
+            if rn == baseline:
+                base_val = v
+        if len(run_names) > 1:
+            last = run_names[-1]
+            if key:
+                lv = _get(runs[last], key)
+                if to_mb and lv:
+                    lv = round(lv / 1024, 1)
+            else:
+                lst = _get(runs[last], "alive_stats")
+                lv = lst.get("mean") if lst else None
+            row[f"vs {baseline}"] = _fmt(round(lv - base_val, 1), places=1) if (lv is not None and base_val is not None) else "-"
+        rows.append(row)
+    return {"columns": columns, "rows": rows}
+
+
 def camera_table(runs: dict[str, dict], baseline: str) -> dict:
     """camera_reload 对比表：相机启动延迟 / 相机后存活数 / 最低 MemAvailable。
 

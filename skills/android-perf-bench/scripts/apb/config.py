@@ -252,6 +252,42 @@ DEFAULT_CAMERA_USE_DURATION = 5    # camera_reload 每 app 前台使用秒数（
 DEFAULT_BUFFER_KB = 262144         # perfetto buffer (256MB，RING_BUFFER 模式不丢数据)
 DEFAULT_TRACE_EXTRA_DURATION_MS = 5000  # trace 比 workload 多录的余量(ms)
 
+# ── keepalive（保活压力测试）默认参数 ──────────────────────────────
+DEFAULT_KA_FOREGROUND = 30         # 每 app 前台秒数
+DEFAULT_KA_BACKGROUND_WAIT = 10    # 进入后台后等待秒数（再启动下一个）
+DEFAULT_KA_ROUNDS = 1              # 重复轮数
+DEFAULT_KA_TARGET_COUNT = 50       # 目标 app 数（实际取设备已装交集）
+
+# keepalive 候选 app 池（国内常见，跑时取设备已装交集，凑到目标数量）
+# 含第三方 + 第一方，覆盖社交/视频/电商/工具/资讯等，制造充分的保活压力
+KEEPALIVE_APP_POOL = [
+    # 社交/通讯
+    "com.tencent.mm", "com.tencent.mobileqq", "com.ss.android.ugc.aweme",
+    "com.xingin.xhs", "com.smile.gifmaker", "com.sina.weibo",
+    "com.zhihu.android", "com.linkedin.android",
+    # 视频/直播
+    "tv.danmaku.bili", "com.tencent.qqlive", "com.ss.android.article.news",
+    "com.kuaishou.lite", "com.netease.cloudmusic", "com.tencent.qqmusic",
+    "com.kugou.android", "com.duowan.kiwi",
+    # 电商
+    "com.taobao.taobao", "com.xunmeng.pinduoduo", "com.jingdong.app.mall",
+    "com.eg.android.AlipayGphone", "com.achievo.vipshop", "com.suning.mobile.ebuy",
+    "com.xunmeng.pinduoduo", "com.tmall.wireless",
+    # 本地/出行/地图
+    "com.sankuai.meituan", "com.sdu.didi.psnger", "com.autonavi.minimap",
+    "com.baidu.BaiduMap", "ctrip.android.view", "com.Qunar",
+    "com.taobao.trip",
+    # 资讯/阅读/工具
+    "com.baidu.searchbox", "com.dragon.read", "com.chaozh.iReaderFree",
+    "com.ifeng.news2", "com.sohu.newsclient", "com.netease.news",
+    "com.baidu.tieba", "com.wondertek.paper",
+    # 浏览器/输入法/系统
+    "com.android.chrome", "com.mi.globalbrowser", "com.baidu.input_hihonor",
+    "com.tencent.wetype", "com.android.settings", "com.android.contacts",
+    "com.android.mms", "com.hihonor.android.totemweather",
+    # 第一方（按品牌补充，setup 探测后动态加）
+]
+
 
 def ensure_dirs() -> None:
     """创建所有输出目录。各阶段入口都会调用。"""

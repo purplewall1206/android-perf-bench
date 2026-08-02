@@ -31,7 +31,7 @@ def main(argv: list[str] | None = None) -> int:
     # ── capture ────────────────────────────────────────────────────
     p_cap = sub.add_parser("capture", help="抓 trace + 跑 workload")
     p_cap.add_argument("--type", required=True,
-                       choices=["startup", "jank", "cache", "cpu", "camera", "all"],
+                       choices=["startup", "jank", "cache", "cpu", "camera", "keepalive", "all"],
                        help="测试类型")
     p_cap.add_argument("--app", default=None, help="目标 app 包名（startup/jank/cpu）")
     p_cap.add_argument("--app-list", default=None, help="逗号分隔的包名列表（cache）")
@@ -50,6 +50,11 @@ def main(argv: list[str] | None = None) -> int:
     p_cap.add_argument("--camera-repeat", type=int, default=3, help="完整加压流程（N app→相机×1）重复轮数（camera，论文 A.1 跑 500 轮）")
     p_cap.add_argument("--camera-use-duration", type=int, default=None, help="camera 模式每 app 前台秒数")
     p_cap.add_argument("--camera-interval", type=int, default=None, help="camera 模式每 app 启动间隔秒数")
+    # keepalive
+    p_cap.add_argument("--ka-foreground", type=int, default=None, help="keepalive 每 app 前台秒数（默认30）")
+    p_cap.add_argument("--ka-background-wait", type=int, default=None, help="keepalive 进后台后等待秒数（默认10）")
+    p_cap.add_argument("--ka-rounds", type=int, default=None, help="keepalive 重复轮数（默认1）")
+    p_cap.add_argument("--ka-target-count", type=int, default=None, help="keepalive 目标 app 数（默认50，取设备已装交集）")
     # 通用
     p_cap.add_argument("--background-apps", type=int, default=0, help="后台预跑 N 个 app 制造内存压力")
     p_cap.add_argument("--launch-method", default="auto", choices=["auto", "adb", "click"],
@@ -69,7 +74,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # ── run (capture+analyze 串联) ─────────────────────────────────
     p_run = sub.add_parser("run", help="capture + analyze 串联（report 需单独跑）")
-    p_run.add_argument("--type", required=True, choices=["startup", "jank", "cache", "cpu", "camera", "all"])
+    p_run.add_argument("--type", required=True, choices=["startup", "jank", "cache", "cpu", "camera", "keepalive", "all"])
     p_run.add_argument("--app", default=None)
     p_run.add_argument("--app-list", default=None)
     p_run.add_argument("--run", default="baseline")
@@ -85,6 +90,10 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument("--camera-repeat", type=int, default=3)
     p_run.add_argument("--camera-use-duration", type=int, default=None)
     p_run.add_argument("--camera-interval", type=int, default=None)
+    p_run.add_argument("--ka-foreground", type=int, default=None)
+    p_run.add_argument("--ka-background-wait", type=int, default=None)
+    p_run.add_argument("--ka-rounds", type=int, default=None)
+    p_run.add_argument("--ka-target-count", type=int, default=None)
     p_run.add_argument("--serial", default=None)
 
     args = parser.parse_args(argv)

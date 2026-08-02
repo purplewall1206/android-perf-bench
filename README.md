@@ -32,6 +32,7 @@ cd android-perf-bench
 | `jank` | 前台滚动帧率稳定性与掉帧 | FPS, jank ratio, jank_type 分解（FrameTimeline，user 版可用） | Fleet Exp-4 |
 | `cache` | 内存缓存容量（连开多 app 后剩几个） | 每步缓存数序列, 峰值缓存数, 每 app RSS/Heap | Fleet Exp-1 |
 | `camera` | 重载相机（内存压力峰值） | 相机启动延迟, 相机后存活 app 数, MemAvailable 曲线 | ATC'26 A2 (App A.1) |
+| `keepalive` | 保活压力（50 app × N 轮） | 存活 app 数, MemAvailable/vmstat/dumpsys 曲线 | A2 keep-alive |
 | `cpu`（可选） | CPU 开销，分离 mutator/GC 线程 | app/mutator/gc runtime | Fleet Exp-4 |
 
 ## 工作流（四阶段）
@@ -84,6 +85,10 @@ python -m apb report --runs baseline.json,variant.json --baseline baseline
 | `--camera-use-duration S` | camera 每 app 前台秒数 | 5 | camera |
 | `--camera-repeat N` | **完整加压流程（N app → 相机×1）重复轮数**（论文跑 500 轮） | 3 | camera |
 | **`--background-apps N`** | **后台预跑 N 个 app 制造内存压力** | 0 | startup / jank |
+| `--ka-foreground S` | keepalive 每 app 前台秒数 | 30 | keepalive |
+| `--ka-background-wait S` | keepalive 进后台后等待秒数 | 10 | keepalive |
+| `--ka-rounds N` | keepalive 重复轮数 | 1 | keepalive |
+| `--ka-target-count N` | keepalive 目标 app 数（取已装交集） | 50 | keepalive |
 | `--run <name>` | 本次 run 名（baseline/variant） | baseline | 全部 |
 
 ### 典型负载场景
@@ -122,6 +127,15 @@ python -m apb capture --type camera --app-list "p1,p2,p3,p4,p5" --camera-repeat 
 python -m apb capture --type jank --app com.tencent.mm     --run wechat
 python -m apb capture --type jank --app com.ss.android.ugc.aweme --run douyin
 python -m apb report --runs wechat.json,douyin.json  # 多 run 自动对比
+```
+
+**场景 6：保活压力测试（50 app 连续启动）**
+```bash
+# 默认：候选池取设备已装 app（≤50），每 app 前台30s→后台10s，每步采样 meminfo/vmstat/存活数
+python -m apb capture --type keepalive --run baseline
+# 自定义：8 个 app，前台 20s，跑 2 轮
+python -m apb capture --type keepalive --app-list "p1,p2,...,p8" --ka-foreground 20 --ka-rounds 2 --run variant
+python -m apb report --runs baseline.json,variant.json  # 对比保活能力
 ```
 
 ### 一键全量测试

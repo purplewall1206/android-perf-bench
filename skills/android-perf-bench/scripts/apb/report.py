@@ -149,6 +149,45 @@ def _write_csv(table: dict, out_path: Path) -> None:
             w.writerow([row.get(c, "") for c in cols])
 
 
+def _plot_keepalive(runs: dict[str, dict], out_path: Path) -> bool:
+    """keepalive：MemAvailable + 存活 app 数随启动步数变化（双 Y 轴）。"""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return False
+    fig, ax1 = plt.subplots(figsize=(9, 4.5))
+    ax2 = ax1.twinx()
+    plotted = False
+    for rn, data in runs.items():
+        for item in data.get("items", []):
+            an = item.get("analysis") or item
+            samples = an.get("samples") or item.get("samples")
+            if not samples:
+                continue
+            xs = [s["step"] for s in samples]
+            ma = [(s.get("memavailable_kb") or 0) / 1024 for s in samples]  # MB
+            al = [s.get("alive_count", 0) for s in samples]
+            ax1.plot(xs, ma, marker=".", markersize=3, linewidth=1, label=f"{rn} MemAvail(MB)")
+            ax2.plot(xs, al, linestyle="--", linewidth=1, alpha=0.7, label=f"{rn} alive")
+            plotted = True
+    if not plotted:
+        plt.close(fig)
+        return False
+    ax1.set_xlabel("App launch step")
+    ax1.set_ylabel("MemAvailable (MB)")
+    ax2.set_ylabel("alive app count")
+    ax1.set_title("Keepalive: Memory & Alive Apps")
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    ax1.legend(lines1, labels1, fontsize=7, loc="upper left")
+    ax1.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=110)
+    plt.close(fig)
+    return True
+
+
 def _plot_camera_mem(runs: dict[str, dict], out_path: Path) -> bool:
     """camera_reload 的 MemAvailable 随启动步数的折线图（论文 Figure 1 风格）。"""
     try:
@@ -235,6 +274,14 @@ def main(args: argparse.Namespace) -> int:
                            "rows": tbl["rows"], "image": img,
                            "summary": "复刻 ATC'26 A2 论文 A.1：N app → 最后启动相机"})
         _write_csv(tbl, config.REPORT_DIR / "camera.csv")
+
+    if "keepalive" in groups:
+        tbl = compare.keepalive_table(groups["keepalive"], baseline)
+        img = "keepalive.png" if _plot_keepalive(groups["keepalive"], config.REPORT_DIR / "keepalive.png") else None
+        benchmarks.append({"title": "保活压力测试 (keepalive)", "columns": tbl["columns"],
+                           "rows": tbl["rows"], "image": img,
+                           "summary": "N app × M 轮，每 app 前台30s→后台10s→下一个，每步采样 meminfo/vmstat/存活数"})
+        _write_csv(tbl, config.REPORT_DIR / "keepalive.csv")
 
     # 全量 JSON
     (config.REPORT_DIR / "results.json").write_text(

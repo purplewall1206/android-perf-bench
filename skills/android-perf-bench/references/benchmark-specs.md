@@ -206,3 +206,47 @@ python -m apb capture --type camera \
 
 ### 与 Fleet Exp-1 (cache) 的区别
 两者都"连开多 app 测缓存"，但 camera_reload 的**关键差异是最后启动相机制造内存压力峰值**——相机是内存消耗大户（预览缓冲、ISP），能逼出系统在极端压力下的 keep-alive 和启动表现，这是论文 A.1 的核心场景。
+
+---
+
+## 测试项：保活压力测试 (keepalive)
+
+### ① 测试内容
+50 个 app 启动 N 轮，每个 app 前台运行 → 进后台 → 等待 → 启动下一个。每步密集采样系统资源和存活 app 数，观察系统在大量 app 保活压力下的内存管理能力——哪些 app 被回收、回收压力（vmstat）、内存水位（meminfo）、各进程 PSS（dumpsys meminfo -S）。
+
+### ② 预制环境
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `--app-list` | 候选池取设备已装交集（≤50） | 逗号分隔包名；不传则用 KEEPALIVE_APP_POOL + 第一方槽位 |
+| `--ka-target-count` | 50 | 目标 app 数（从已装交集取前 N 个） |
+| `--ka-foreground` | 30 | 每 app 前台秒数 |
+| `--ka-background-wait` | 10 | 进后台后等待秒数（再启动下一个） |
+| `--ka-rounds` | 1 | 重复轮数 |
+
+**单 app 流程**：启动 → 前台 `ka-foreground` 秒 → press home 进桌面 → **采样** → 等 `ka-background-wait` 秒 → **采样** → 下一个 app。
+
+### ③ 分析的数据（每步 3 个采样点）
+| 指标 | 来源 | 采样点 |
+|---|---|---|
+| **MemAvailable / Cached / Swap / AnonPages 等** | `/proc/meminfo` | pre_launch / post_home / post_bg_wait |
+| **pgmajfault / pswpin / pswpout / pgscan / oom_kill** | `/proc/vmstat` | 同上 |
+| **每进程 PSS** | `dumpsys meminfo -S` | 同上 |
+| **存活后台 app 数** | `dumpsys meminfo` 扫包名 | 同上 |
+
+**统计**：MemAvailable 均值/最低/最高、存活数 均值/峰值。
+**可视化**：MemAvailable + 存活 app 数随启动步数变化（双 Y 轴折线图）。
+
+### ④ 报告列
+`指标 | 各 run 值 | vs 基线`（最低 MemAvailable / 峰值存活数 / 平均存活数）
+
+### CLI
+```bash
+# 默认：候选池取设备已装 app（最多 50 个），前台 30s + 后台 10s，1 轮
+python -m apb capture --type keepalive --run baseline
+
+# 自定义：指定 8 个 app，前台 20s，后台 5s，跑 3 轮
+python -m apb capture --type keepalive \
+  --app-list "com.tencent.mm,com.ss.android.ugc.aweme,..." \
+  --ka-foreground 20 --ka-background-wait 5 --ka-rounds 3 --run baseline
+```
+

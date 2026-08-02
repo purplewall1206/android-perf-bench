@@ -149,7 +149,7 @@ def main(args: argparse.Namespace) -> int:
                 else list(config.DEFAULT_APP_LIST))
 
     # 分派
-    from .benchmarks import startup, jank_fps, cache_mem, camera_reload
+    from .benchmarks import startup, jank_fps, cache_mem, camera_reload, keepalive
     raw = None
     if args.type in ("startup", "all"):
         raw = startup.run(dev, args, env, app_list)
@@ -167,19 +167,23 @@ def main(args: argparse.Namespace) -> int:
         raw = camera_reload.run(dev, args, env, app_list)
         if args.type == "all" and raw:
             _save_raw(args.run + "_camera", "camera", raw, env)
+    if args.type in ("keepalive", "all"):
+        raw = keepalive.run(dev, args, env, app_list)
+        if args.type == "all" and raw:
+            _save_raw(args.run + "_keepalive", "keepalive", raw, env)
     if args.type == "cpu":
         raw = jank_fps.run(dev, args, env, app_list, force_cpu=True)
 
     # 单类型（非 all）落盘 + 可选 analyze
-    if args.type in ("startup", "jank", "cache", "cpu", "camera") and raw:
+    if args.type in ("startup", "jank", "cache", "cpu", "camera", "keepalive") and raw:
         suffix = {"jank": "", "cpu": "_cpu", "cache": "_cache",
-                  "startup": "", "camera": "_camera"}[args.type]
+                  "startup": "", "camera": "_camera", "keepalive": "_keepalive"}[args.type]
         _save_raw(args.run + suffix, args.type, raw, env)
 
     if not args.no_analyze and raw and args.type != "all":
         from . import trace_analyze
         suffix = {"jank": "", "cpu": "_cpu", "cache": "_cache",
-                  "startup": "", "camera": "_camera"}[args.type]
+                  "startup": "", "camera": "_camera", "keepalive": "_keepalive"}[args.type]
         trace_analyze.analyze_run(args.run + suffix, env)
     return 0
 
