@@ -85,6 +85,9 @@ def run(dev: Device, args, env: dict, app_list: list[str]) -> list[dict]:
         time.sleep(1)
 
         # ②③④ 启 perfetto（覆盖全程）→ N app 加压 → 相机
+        # 注意：录制从轮次一开始就启动（覆盖加压全程 + 相机），不是加压结束才启动。
+        # 实测每 app 全流程约 7~8s，相机在录制 ~122s 处启动、160s 的录制完整覆盖。
+        # 不要把这个时长加太长：RING buffer 满后旧数据被覆盖，反而可能把相机窗口冲掉。
         per_round_s = len(target_apps) * (use_duration + interval + 2) + 10
         with capture(dev, camera_pkg, duration_s=per_round_s, run=args.run,
                      name=f"camera_r{rd}", env=env, include_sched=True):

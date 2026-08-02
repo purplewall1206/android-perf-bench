@@ -79,6 +79,21 @@ data_sources {
   }
 }
 
+# ── 系统统计（/proc/meminfo + /proc/vmstat 周期采样，250ms）→ buffer 1 ──
+# meminfo 提供 MemAvailable/MemFree 等系统内存水位；vmstat 提供 pgmajfault/pswpin/pswpout 等回收压力。
+# 注意：这些字段在 sys_stats_config（数据源 linux.sys_stats）里，不在 process_stats_config 中。
+# meminfo_counters 留空 = 上报所有已知 counter（含 MemAvailable）。
+data_sources {
+  config {
+    name: "linux.sys_stats"
+    target_buffer: 1
+    sys_stats_config {
+      meminfo_period_ms: 250
+      vmstat_period_ms: 250
+    }
+  }
+}
+
 # ── 包列表（进程↔包名映射）→ buffer 1 ──
 data_sources {
   config {

@@ -15,7 +15,20 @@ import argparse
 import sys
 
 
+def _configure_stdio() -> None:
+    """Windows 控制台默认 GBK，脚本里打印 ✓ 等 UTF-8 字符会 UnicodeEncodeError 崩溃。
+
+    这里把 stdout/stderr 重配为 UTF-8 + errors=replace，保证中文 Windows 下稳定输出。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _configure_stdio()
     parser = argparse.ArgumentParser(
         prog="apb",
         description="android-perf-bench: Android 性能测试 harness",

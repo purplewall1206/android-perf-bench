@@ -1,4 +1,5 @@
 """android-perf-bench 全局配置：路径、app 列表、阈值、perfetto release 版本。"""
+import os
 from pathlib import Path
 
 # ── 路径 ────────────────────────────────────────────────────────────
@@ -9,7 +10,8 @@ TEMPLATES_DIR = SKILL_DIR / "templates"
 REFERENCES_DIR = SKILL_DIR / "references"
 
 # 输出根目录（默认在 scripts/out/，可被环境变量 APB_OUT 覆盖）
-OUT_DIR = Path(__file__).resolve().parent.parent / "out"
+_DEFAULT_OUT = Path(__file__).resolve().parent.parent / "out"
+OUT_DIR = Path(os.environ.get("APB_OUT") or str(_DEFAULT_OUT))
 TRACE_DIR = OUT_DIR / "traces"
 RESULT_DIR = OUT_DIR / "results"
 REPORT_DIR = OUT_DIR / "report"

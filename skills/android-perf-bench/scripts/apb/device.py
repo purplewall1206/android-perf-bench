@@ -315,14 +315,51 @@ class Device:
         return False
 
     def app_wait(self, pkg: str, front: bool = True, timeout: float = 15.0) -> int:
-        """等待 app 运行/到前台，返回 pid 或 0。"""
-        try:
-            return self.u2().app_wait(pkg, front=front, timeout=timeout)
-        except Exception:
-            return 0
+        """等待 app 运行/到前台，返回 pid 或 0。
+
+        前台判定走 app_current（dumpsys window），不用 u2 的 app_wait——
+        u2 前台检测在部分 ROM（荣耀/华为 MagicOS）会误报（明明 A 在前台却返回 B），
+        导致各 benchmark 反复重拉前台、每轮多花一两分钟。
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if front:
+                cur = self.app_current()
+                if cur.get("package") == pkg:
+                    try:
+                        pid = int(cur.get("pid") or 0)
+                    except (TypeError, ValueError):
+                        pid = 0
+                    return pid
+            else:
+                rc, out = self.shell("pidof", pkg, timeout=5)
+                if rc == 0 and out.strip():
+                    try:
+                        return int(out.strip())
+                    except ValueError:
+                        pass
+            time.sleep(0.4)
+        return 0
 
     def app_current(self) -> dict:
-        """返回当前前台 app {package, activity, pid}。"""
+        """返回当前前台 app {package, activity, pid}。
+
+        优先解析 `dumpsys window` 的 mCurrentFocus（系统窗口焦点，最可靠）；
+        u2 的 app_current 在荣耀/华为 MagicOS 上会误报（把非前台 app 当当前 app），
+        只作兜底。
+        """
+        try:
+            rc, out = self.shell("dumpsys", "window", timeout=10)
+            m = re.search(r"mCurrentFocus=Window\{[^}]*?\s+u\d+\s+(\S+)/(\S+)\}", out)
+            if m:
+                pkg, act = m.group(1), m.group(2)
+                pid = ""
+                prc, pout = self.shell("pidof", pkg, timeout=5)
+                if prc == 0:
+                    pid = pout.strip()
+                return {"package": pkg, "activity": act, "pid": pid}
+        except Exception:
+            pass
         try:
             return self.u2().app_current()
         except Exception:

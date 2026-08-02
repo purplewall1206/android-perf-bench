@@ -1,0 +1,13 @@
+{
+  "name": "android-perf-bench",
+  "description": "Claude Code plugin for Android performance benchmarking via adb + perfetto",
+  "owner": {
+    "name": "purplewall1206"
+  },
+  "plugins": [
+    {
+      "name": "android-perf-bench",
+      "source": "."
+    }
+  ]
+}

@@ -32,10 +32,11 @@ def _get_tp(trace_path: str, env: dict):
 
 
 def query_sql(trace_path: str, sql: str, env: dict, timeout: int = 180,
-              quiet: bool = False) -> list[dict]:
+              quiet: bool = False, raise_on_error: bool = False) -> list[dict]:
     """用 perfetto TraceProcessor 跑 SQL，返回行列表（每行 dict，列名→值）。
 
-    同一 trace 复用 tp 实例（性能）。失败返回空列表。
+    同一 trace 复用 tp 实例（性能）。默认失败返回空列表；raise_on_error=True 时抛出，
+    供调用方区分"查询报错"与"查询成功但无数据"（避免 trace 分析静默变 None）。
     """
     try:
         tp = _get_tp(trace_path, env)
@@ -46,6 +47,8 @@ def query_sql(trace_path: str, sql: str, env: dict, timeout: int = 180,
     except Exception as e:
         if not quiet:
             print(f"[analyze] query 失败: {str(e)[:300]}")
+        if raise_on_error:
+            raise
         return []
 
 
@@ -110,11 +113,13 @@ ORDER BY cpu_dur DESC;
 SQL_STARTUP = """
 INCLUDE PERFETTO MODULE android.startup.startups;
 INCLUDE PERFETTO MODULE android.startup.time_to_display;
-SELECT startup_id, package, startup_type, dur,
-       time_to_initial_display AS ttid,
-       time_to_full_display AS ttfd
-FROM android_startups
-WHERE package = '{pkg}';
+SELECT s.startup_id, s.package, s.startup_type, s.dur,
+       t.time_to_initial_display AS ttid,
+       t.time_to_full_display AS ttfd
+FROM android_startups s
+LEFT JOIN android_startup_time_to_display t USING (startup_id)
+WHERE s.package = '{pkg}'
+ORDER BY s.ts;
 """
 
 
@@ -136,13 +141,16 @@ def analyze_startup_trace(trace_path: str, pkg: str, am_results: list[dict], env
     out["am_stats"]["total_time_ms"] = metrics._stats(
         [r["total_time_ms"] for r in out["am_runs"] if r["total_time_ms"] is not None])
 
-    # trace 侧（若有）
+    # trace 侧（若有）。raise_on_error 区分"SQL 报错"（如 perfetto 版本 schema 不兼容）
+    # 与"查询成功但 trace 里没有启动事件"，前者显式记 trace_error，不静默吞掉。
     try:
-        rows = query_sql(trace_path, SQL_STARTUP.format(pkg=pkg), env, quiet=True)
+        rows = query_sql(trace_path, SQL_STARTUP.format(pkg=pkg), env,
+                         quiet=True, raise_on_error=True)
         if rows:
             out["trace"] = metrics.startup_from_metric(rows)
     except Exception as e:
-        out["trace_error"] = str(e)
+        out["trace"] = None
+        out["trace_error"] = str(e)[:300]
     return out
 
 
