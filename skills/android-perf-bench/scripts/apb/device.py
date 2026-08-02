@@ -153,7 +153,166 @@ class Device:
             print(f"[device] app_start({pkg}) 失败: {e}")
             return False
 
-    def app_wait(self, pkg: str, front: bool = True, timeout: float = 15.0) -> int:
+    def _app_label(self, pkg: str) -> Optional[str]:
+        """查 app 的桌面显示名。先查 config 映射，再回退 PackageManager label。"""
+        from . import config
+        label = config.PACKAGE_DISPLAY_NAMES.get(pkg)
+        if label:
+            return label
+        # PackageManager 查 label
+        rc, out = self.shell("cmd", "package", "list", "packages", "-f", pkg, timeout=10)
+        # dumpsys package 查 label 不可靠，用 pm dump 太重；这里直接返回 None 让调用方处理
+        return None
+
+    def launch_by_click(self, pkg: str, timeout: float = 8.0) -> bool:
+        """点击启动：回桌面 → 进 app 抽屉 → 遍历所有屏找图标 → click。
+
+        遍历策略：先在 app 抽屉里 scroll.to(text=label) 找；找不到则左右翻页。
+        屏幕上没有该 app（未装/在文件夹内）时返回 False，调用方回退 adb。
+        """
+        d = self.u2()
+        label = self._app_label(pkg)
+        if not label:
+            return False  # 无显示名，无法点击
+        try:
+            d.press("home"); time.sleep(0.6)
+            # 上滑进 app 抽屉（荣耀/华为/小米通用）
+            info = d.info
+            w, h = info["displayWidth"], info["displayHeight"]
+            d.swipe(w // 2, int(h * 0.9), w // 2, int(h * 0.1), 0.4); time.sleep(1.2)
+            # 在抽屉的 scrollable 容器里滚动查找目标
+            found = False
+            try:
+                d(scrollable=True).scroll.to(text=label)
+                if d(text=label).exists:
+                    found = True
+            except Exception:
+                pass
+            # 若 scroll.to 没找到，左右翻页再找（部分 ROM 抽屉分页不分滚动）
+            if not found:
+                for _ in range(6):
+                    if d(text=label).exists:
+                        found = True
+                        break
+                    d.swipe(int(w * 0.8), h // 2, int(w * 0.2), h // 2, 0.3); time.sleep(0.5)
+            if not found:
+                return False
+            el = d(text=label)
+            if el.exists:
+                el.click()
+                # 等待 app 到前台
+                end = time.time() + timeout
+                while time.time() < end:
+                    cur = self.app_current()
+                    if cur.get("package") == pkg:
+                        return True
+                    time.sleep(0.3)
+            return False
+        except Exception as e:
+            print(f"[device] launch_by_click({pkg}/{label}) 异常: {e}")
+            return False
+
+    def launch_app(self, pkg: str, method: str = "auto",
+                   stop: bool = False, force_click: bool = False) -> dict:
+        """统一启动入口，按策略选择 adb / 点击。
+
+        method:
+          - "adb"（默认推荐）：u2 app_start。进程会启动并占内存（即使被保活 app 抢前台，
+            内存压力已产生——camera_reload/cache 测的是内存压力，不依赖 app 在前台）。
+          - "click"：点击桌面/app抽屉图标启动（模拟真实用户点击，某些 ROM 对点击有优化）。
+            先遍历 app 抽屉 scroll.to 找图标，找不到回退 adb。
+          - "auto"：等价 adb（保活环境下点击不可靠，故 auto 直接用 adb）。
+        返回 {method_used, on_front, pkg}。注：on_front 仅作参考，保活 app 抢前台时可能为 False
+        但进程已启动、内存已占用。
+        """
+        result = {"pkg": pkg, "method_used": None, "on_front": False}
+        d = self.u2()
+
+        def _check_front() -> bool:
+            return self.app_current().get("package") == pkg
+
+        # 点击模式
+        if method == "click" or force_click:
+            if self.launch_by_click(pkg):
+                result.update(method_used="click", on_front=True)
+                return result
+            # 点击失败回退 adb
+            self.app_start(pkg, stop=stop)
+            time.sleep(1.0)
+            result["method_used"] = "adb(click回退)"
+            result["on_front"] = _check_front()
+            return result
+
+        # adb 模式（默认/auto）
+        self.app_start(pkg, stop=stop)
+        time.sleep(1.0)
+        result["method_used"] = "adb"
+        result["on_front"] = _check_front()
+        return result
+
+    def clear_recent_apps(self, app_list: list[str] | None = None,
+                          cleanup_cfg: dict | None = None) -> bool:
+        """清理后台 app。优先点击"最近任务-清除全部"，不可用则回退 force-stop 批量杀。
+
+        cleanup_cfg 来自 env['recent_cleanup']（setup 探测结果）。
+        返回是否执行了清理。
+        """
+        cfg = cleanup_cfg or {}
+        # 方式1：点击最近任务全清（探测可用时）
+        if cfg.get("available"):
+            try:
+                d = self.u2()
+                info = d.info
+                w, h = info["displayWidth"], info["displayHeight"]
+                method = cfg.get("method")
+                if method == "keyevent_187":
+                    d.shell("input keyevent 187")
+                elif method == "keyevent_580":
+                    d.shell("input keyevent 580")
+                elif method == "swipe_gesture":
+                    d.swipe(w // 2, h - 10, w // 2, int(h * 0.3), 0.6)
+                time.sleep(1.5)
+                # 找清除按钮点击
+                import re
+                clicked = False
+                for t in cfg.get("clear_texts", []):
+                    if d(text=t).click_exists(timeout=1.0):
+                        clicked = True; break
+                if not clicked:
+                    clear_pat = re.compile(r"清除|清理|关闭全部|全部关闭|全部清除|close all|clear all|×|垃圾", re.I)
+                    for el in d(textMatches=clear_pat):
+                        try:
+                            el.click(); clicked = True; break
+                        except Exception:
+                            continue
+                time.sleep(1.0)
+                d.press("home")
+                if clicked:
+                    return True
+            except Exception as e:
+                print(f"[device] 点击清理后台失败: {e}")
+
+        # 方式2：回退 force-stop 批量杀（兜底）
+        if app_list:
+            print("[device] ⚠ 用 adb force-stop 批量杀后台兜底（不如系统清理彻底）")
+            killed = 0
+            rc, out = self.shell("dumpsys", "activity", "recents", timeout=15)
+            bg_pkgs = set(app_list)
+            if rc == 0:
+                import re
+                for m in re.finditer(r'#\d+\s+[A-Z]+\s+(\S+)/', out):
+                    bg_pkgs.add(m.group(1))
+            launcher_pkgs = {"com.android.systemui", "com.hihonor.android.launcher",
+                             "com.huawei.android.launcher", "com.miui.home",
+                             "com.coloros.launcher", "com.bbk.launcher2"}
+            for pkg in bg_pkgs:
+                if pkg and pkg not in launcher_pkgs:
+                    self.force_stop(pkg)
+                    killed += 1
+            print(f"[device] force-stop 杀了约 {killed} 个后台 app")
+            time.sleep(1.0)
+            return True
+        return False
         try:
             return self.u2().app_wait(pkg, front=front, timeout=timeout)
         except Exception:

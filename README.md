@@ -1,8 +1,28 @@
 # android-perf-bench
 
-一个测量 **Android 手机性能**并生成"基线 vs 方案"对比报告的 ZCode/Claude skill harness。测量方法学复刻自 **[Fleet (ASPLOS'24)](https://github.com/jiachengh/Fleet)**，但通用化为对任意已连接手机做性能基线测试——**不需要刷自编 AOSP、不需要 root**。
+一个测量 **Android 手机性能**并生成"基线 vs 方案"对比报告的 **Claude Code plugin**。测量方法学复刻自 **[Fleet (ASPLOS'24)](https://github.com/jiachengh/Fleet)** 与 **[ATC'26 A2](https://github.com/jiachengh/Fleet)**，但通用化为对任意已连接手机做性能基线测试——**不需要刷自编 AOSP、不需要 root**。
 
 已在 **荣耀 BKQ-AN00 (Android 16, user 版, 无 root)** 上端到端实测验证。
+
+## 作为 Claude Code plugin 安装
+
+```bash
+# 方式1：添加为本 marketplace（推荐）
+claude plugin marketplace add purplewall1206/android-perf-bench
+claude plugin install android-perf-bench
+
+# 方式2：直接用（clone 后在仓库目录）
+git clone https://github.com/purplewall1206/android-perf-bench
+cd android-perf-bench
+```
+
+安装后获得：
+- **skill** `android-perf-bench`：自动触发（提"测手机性能/帧率/启动/内存"时）
+- **命令** `/android-perf-bench:perf-bench`：显式触发，如 `/android-perf-bench:perf-bench 测一下抖音的帧率`
+- **subagent** `trace-analyst`：深挖 trace 数据时可委派
+- **hooks**：跑 capture 前自动检查设备连接
+
+也可脱离 Claude 独立用：`cd skills/android-perf-bench/scripts && python -m apb setup`。
 
 ## 能测什么
 
@@ -17,7 +37,7 @@
 ## 工作流（四阶段）
 
 ```bash
-cd scripts
+cd skills/android-perf-bench/scripts
 
 # 阶段 0：探测设备能力 + 下载 trace_processor_shell + 装依赖 + 推 u2 agent
 python -m apb setup --install-deps --init-u2
@@ -142,30 +162,40 @@ python -m apb run --type all --app com.android.chrome    # startup + jank + cach
 ## 目录结构
 
 ```
-android-perf-bench/
-├── SKILL.md                       # ZCode skill 入口（四阶段流程 + 触发描述）
-├── README.md
-├── references/                    # 渐进式披露文档
-│   ├── fleet-methodology.md       # Fleet 5 实验方法学 + 论文图映射
-│   ├── benchmark-specs.md         # 每个测试项详细规格（测什么/预制环境/分析数据/CLI 参数）
-│   ├── perfetto-queries.md        # 全部 SQL 查询手册
-│   └── troubleshooting.md         # 排错（root/驱动/FrameTimeline/u2）
-├── templates/
-│   ├── perfetto-config.textproto  # perfetto trace 配置（双 buffer，参数化）
-│   ├── report.md.j2 / .html.j2    # 报告模板
-└── scripts/
-    ├── requirements.txt
-    ├── run.py                     # 便捷入口
-    └── apb/                       # python -m apb
-        ├── __main__.py            # CLI: setup/capture/analyze/report/run
-        ├── setup_env.py           # 阶段0：设备探测 + trace_processor_shell + 依赖
-        ├── device.py              # adbutils + uiautomator2 封装
-        ├── trace_capture.py       # 阶段1：perfetto/atrace 自适应抓取
-        ├── trace_analyze.py       # 阶段2：trace_processor_shell 跑 SQL
-        ├── metrics.py             # 指标计算（复刻 Fleet 公式）
-        ├── compare.py             # 基线 vs 方案对比
-        ├── report.py              # 阶段3：CSV/JSON/MD/HTML/图
-        └── benchmarks/            # startup / jank_fps / cache_mem / camera_reload (+ cpu)
+android-perf-bench/                  ← Claude Code plugin 根（= git 仓库根）
+├── .claude-plugin/
+│   └── plugin.json                  # plugin manifest（name/version/components 指针）
+├── commands/
+│   └── perf-bench.md                # 斜杠命令 /android-perf-bench:perf-bench
+├── agents/
+│   └── trace-analyst.md             # subagent：trace 解析专家
+├── hooks/
+│   ├── hooks.json                   # PreToolUse：capture 前检查设备连接
+│   └── check-device.sh
+├── skills/
+│   └── android-perf-bench/          # 核心 skill
+│       ├── SKILL.md                 # 四阶段工作流 + 触发描述
+│       ├── references/              # 渐进式披露文档
+│       │   ├── fleet-methodology.md
+│       │   ├── benchmark-specs.md   # 每个测试项详细规格
+│       │   ├── perfetto-queries.md  # SQL 查询手册
+│       │   └── troubleshooting.md
+│       ├── templates/               # perfetto 配置 + 报告模板
+│       └── scripts/
+│           ├── requirements.txt
+│           ├── run.py
+│           └── apb/                 # python -m apb（CLI）
+│               ├── __main__.py      # setup/capture/analyze/report/run
+│               ├── setup_env.py     # 设备探测 + trace_processor_shell + app扫描 + 后台清理探测
+│               ├── device.py        # adbutils + u2（启动/清理/手势）
+│               ├── trace_capture.py # perfetto 自适应抓取
+│               ├── trace_analyze.py # trace_processor_shell 跑 SQL
+│               ├── metrics.py       # 指标计算（FrameTimeline/jank/CPU）
+│               ├── compare.py       # 基线 vs 方案对比
+│               ├── report.py        # CSV/JSON/MD/HTML/图
+│               └── benchmarks/      # startup / jank_fps / cache_mem / camera_reload (+cpu)
+├── DEPENDENCIES.md                  # 依赖的 app 清单（第一方按厂商 + 第三方）
+├── README.md  LICENSE
 ```
 
 ## 安装与依赖

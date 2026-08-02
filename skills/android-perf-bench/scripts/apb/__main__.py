@@ -52,6 +52,8 @@ def main(argv: list[str] | None = None) -> int:
     p_cap.add_argument("--camera-interval", type=int, default=None, help="camera 模式每 app 启动间隔秒数")
     # 通用
     p_cap.add_argument("--background-apps", type=int, default=0, help="后台预跑 N 个 app 制造内存压力")
+    p_cap.add_argument("--launch-method", default="auto", choices=["auto", "adb", "click"],
+                       help="app 启动方式：auto(默认,adb优先被拦则点击) / adb / click")
     p_cap.add_argument("--serial", default=None)
     p_cap.add_argument("--no-analyze", action="store_true", help="只抓 trace，不自动解析")
 
@@ -79,6 +81,7 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument("--warmup", type=int, default=5)
     p_run.add_argument("--use-duration", type=int, default=None)
     p_run.add_argument("--background-apps", type=int, default=0)
+    p_run.add_argument("--launch-method", default="auto", choices=["auto", "adb", "click"])
     p_run.add_argument("--camera-repeat", type=int, default=3)
     p_run.add_argument("--camera-use-duration", type=int, default=None)
     p_run.add_argument("--camera-interval", type=int, default=None)

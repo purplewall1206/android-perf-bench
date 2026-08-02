@@ -22,18 +22,25 @@ from ..device import Device
 from ..trace_capture import capture
 
 
-def _detect_camera(dev: Device) -> str:
-    """探测设备上实际存在的相机包名（精确匹配，避免 cameraextensions 误判）。"""
+def _detect_camera(dev: Device, env: dict) -> str:
+    """探测设备上实际存在的相机包名。优先用 setup 阶段探测的 env['camera_pkg']，
+    否则按品牌从 first_party_candidates 精确匹配（避免 cameraextensions 误判）。"""
+    if env.get("camera_pkg"):
+        return env["camera_pkg"]
     rc, out = dev.shell("pm", "list", "packages", timeout=15)
     installed = set()
     for line in (out or "").splitlines():
         line = line.strip()
         if line.startswith("package:"):
             installed.add(line[len("package:"):])
-    for pkg in config.CAMERA_PACKAGES:
+    brand = env.get("brand", "")
+    for pkg in config.first_party_candidates("camera", brand):
         if pkg in installed:
             return pkg
-    return "com.android.camera"  # 兜底
+    for pkg in config.CAMERA_PACKAGES:  # 全厂商兜底
+        if pkg in installed:
+            return pkg
+    return "com.android.camera"
 
 
 def _memavailable(dev: Device) -> int | None:
@@ -50,33 +57,10 @@ def _memavailable(dev: Device) -> int | None:
     return None
 
 
-def _app_action(dev: Device, pkg: str, duration: int, try_scroll: bool = True) -> None:
-    """每个 app 启动后的代表性动作。
-
-    优先等 app 到前台并滚动；若被其他 app 抢前台（荣耀等 ROM 有激进保活），
-    则跳过滚动只等待——内存压力主要靠进程启动产生，不依赖手势。
-    try_scroll=False 时只等待不滚动（camera 阶段用）。
-    """
-    pid = dev.app_wait(pkg, front=True, timeout=6)
-    on_front = False
-    if pid:
-        on_front = True
-    else:
-        cur = dev.app_current()
-        on_front = bool(cur and cur.get("package") == pkg)
-    if not on_front:
-        print(f"    ⚠ {pkg} 未到前台，仅等待（不滚动，避免误触桌面）")
-        time.sleep(duration)
-        return
-    time.sleep(1)
-    dev.dismiss_popups()
-    if not try_scroll:
-        time.sleep(max(0, duration - 1))
-        return
-    end = time.time() + duration
-    while time.time() < end:
-        dev.swipe_up(scale=0.6)
-        time.sleep(0.6)
+def _app_action(dev: Device, pkg: str, duration: int) -> None:
+    """app 启动后等待进程稳定（占内存）。不做手势——保活 app 抢前台时手势会在错误界面操作，
+    且 camera_reload 测的是内存压力（进程启动即占内存），不依赖 app 在前台。"""
+    time.sleep(duration)
 
 
 def run(dev: Device, args, env: dict, app_list: list[str]) -> list[dict]:
@@ -104,7 +88,7 @@ def run(dev: Device, args, env: dict, app_list: list[str]) -> list[dict]:
             print(f"[camera_reload] 设备上论文 app 装得太少（{len(target_apps)} 个），改用传入/默认 app_list")
             target_apps = [a for a in app_list if a in installed][:8]
 
-    camera_pkg = _detect_camera(dev)
+    camera_pkg = _detect_camera(dev, env)
     # camera_repeat 语义：完整加压流程（N app → 相机×1）重复的轮数（论文 500 轮）
     rounds = camera_repeat
     # 估算单轮时长用于 perfetto duration（N app × use_duration + 相机 ~6s + 余量）
@@ -122,26 +106,35 @@ def run(dev: Device, args, env: dict, app_list: list[str]) -> list[dict]:
     camera_results = []      # 每轮相机的指标
     started_apps = list(target_apps)
 
+    # 测试前清后台（点击最近任务全清，不可用则 force-stop 兜底）
+    print("[camera_reload] 清理后台...")
+    dev.clear_recent_apps(app_list=target_apps + [camera_pkg],
+                          cleanup_cfg=env.get("recent_cleanup", {}))
+
     # trace 覆盖整个多轮测试
     total_dur = max(per_round_s * rounds, 20)
     with capture(dev, camera_pkg, duration_s=total_dur, run=args.run,
                  name="camera", env=env, include_sched=True):
         for rd in range(rounds):
             print(f"\n  ── 第 {rd+1}/{rounds} 轮 ──")
-            # ── 阶段A：依次启动所有 app（轮间不清后台，压力累积，同论文）──
+            # ── 阶段A：依次启动所有 app（启动→使用→press home→下一个，模拟真实用户）──
+            launch_method = getattr(args, "launch_method", "auto")
             for i, pkg in enumerate(target_apps):
                 step_idx = rd * len(target_apps) + i
                 mb = _memavailable(dev)
                 if mb is not None:
                     mem_curve.append({"round": rd+1, "step": step_idx,
                                       "phase": "pre_launch", "app": pkg, "memavailable_kb": mb})
-                res = dev.am_start_w(pkg)
-                dev.app_start(pkg)  # u2 兜底切前台
+                # 记录启动时间（am start -W）+ 统一启动（auto: adb优先，被拦则点击）
+                am_res = dev.am_start_w(pkg)
+                lr = dev.launch_app(pkg, method=launch_method)
                 launch_times.append({"round": rd+1, "app": pkg,
-                                     "wait_time_ms": res.get("wait_time"),
-                                     "state": res.get("launch_state")})
+                                     "wait_time_ms": am_res.get("wait_time"),
+                                     "state": am_res.get("launch_state"),
+                                     "launch_method": lr.get("method_used"),
+                                     "on_front": lr.get("on_front")})
                 _app_action(dev, pkg, use_duration)
-                dev.home()
+                dev.home()  # 上滑/press home 回桌面，再启动下一个（真实用户节奏）
                 time.sleep(interval)
                 mb = _memavailable(dev)
                 if mb is not None:
@@ -152,19 +145,19 @@ def run(dev: Device, args, env: dict, app_list: list[str]) -> list[dict]:
             pre_cam_cached = dev.cached_apps(set(started_apps))
             pre_cam_mem = _memavailable(dev)
 
-            # ── 阶段C：启动相机一次（本轮压力峰值）──
+            # ── 阶段C：启动相机一次（本轮压力峰值，同样 launch_app 统一启动）──
             dev.force_stop(camera_pkg)
             time.sleep(1)
-            res = dev.am_start_w(camera_pkg)
-            dev.app_start(camera_pkg)
+            am_res = dev.am_start_w(camera_pkg)
+            dev.launch_app(camera_pkg, method=launch_method)
             time.sleep(3)  # 等相机预览稳定，触发内存压力
-            wt = res.get("wait_time")
+            wt = am_res.get("wait_time")
             post_cam_cached = dev.cached_apps(set(started_apps))
             post_cam_mem = _memavailable(dev)
             camera_results.append({
                 "round": rd + 1,
                 "camera_wait_time_ms": wt,
-                "camera_state": res.get("launch_state"),
+                "camera_state": am_res.get("launch_state"),
                 "pre_survived_count": len(pre_cam_cached),
                 "survived_apps": sorted(post_cam_cached),
                 "survived_count": len(post_cam_cached),

@@ -16,8 +16,9 @@ def run(dev: Device, args, env: dict, app_list: list[str]) -> list[dict]:
     print(f"\n[cache] 连续启动 {len(app_list)} 个 app，每 app 前台 {use_duration}s")
     dev.unlock()
 
-    # 清空后台
-    dev.kill_all(app_list)
+    # 清空后台（点击最近任务全清优先，force-stop 兜底）
+    print("[cache] 清理后台...")
+    dev.clear_recent_apps(app_list=app_list, cleanup_cfg=env.get("recent_cleanup", {}))
     time.sleep(2)
 
     cached_numbers = []

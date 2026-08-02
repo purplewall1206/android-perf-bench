@@ -1,0 +1,13 @@
+{
+  "name": "android-perf-bench",
+  "version": "0.2.0",
+  "description": "测试 Android 手机性能并生成基线对比报告。通过 adb + perfetto + trace_processor 自动化抓 trace、解析、生成 Markdown/HTML/CSV 报告。覆盖启动时间/帧率jank/缓存容量/重载相机四类测试，方法学复刻自 Fleet (ASPLOS'24) 与 ATC'26 A2 论文。",
+  "author": { "name": "purplewall1206", "url": "https://github.com/purplewall1206" },
+  "license": "MIT",
+  "homepage": "https://github.com/purplewall1206/android-perf-bench",
+  "keywords": ["android", "performance", "perfetto", "trace", "benchmark", "jank", "fps", "startup"],
+  "skills": "skills",
+  "commands": "commands",
+  "agents": "agents",
+  "hooks": "hooks"
+}
